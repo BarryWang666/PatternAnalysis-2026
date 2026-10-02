@@ -26,6 +26,20 @@ and recoverable identities before deciding how to divide the data. Folder
 names remain provenance and are never model inputs. These counts come from
 the saved inventory audit; no clinical diagnosis is inferred from a filename.
 
+### Separate patients into four reproducible data roles
+
+Patients, rather than images or acquisitions, define the partition boundary.
+Sorted AD and NC patient strata use one private PCG64(2026) stream. The fixed
+AD allocation is 133/22/22/44 and NC is 275/46/46/92 across TRAIN, TUNE,
+CALIBRATION and TEST. All visits and slices inherit their patient's role.
+
+This gives 408/68/68/136 patients and 18,560/2,860/3,180/5,920 slices.
+TRAIN updates weights, TUNE guides development, CALIBRATION fits probability
+or rejection parameters, and TEST measures the declared final procedure.
+Keeping all four roles in a manifest prevents a later model from quietly
+using a different population. Correlated slices still do not become thousands
+of independent patients merely because the network consumes individual images.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

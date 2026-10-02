@@ -33,9 +33,70 @@ from torch.utils.data import DataLoader, Dataset
 PARTITIONS = ("train", "tune", "calibration", "test")
 
 
+def read_manifest(path):
+    """Read a CSV with relative_image_path, subject_id, label and partition.
+
+    Return rows sorted by path, with NC=0/AD=1 integer labels. Reject duplicate
+    images and patients assigned to multiple partitions before any image I/O.
+    """
+    with Path(path).open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+    required = {"relative_image_path", "subject_id", "label", "partition"}
+    if not rows or any(not required.issubset(row) for row in rows):
+        raise ValueError("Manifest needs relative_image_path, subject_id, label and partition")
+
+    images, patients = set(), {}
+    for row in rows:
+        relative = Path(row["relative_image_path"])
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise ValueError("Image paths must stay inside the data directory")
+        if row["label"] not in ("0", "1") or row["partition"] not in PARTITIONS:
+            raise ValueError("Expected labels NC=0 / AD=1 and a declared partition")
+        if not row["subject_id"] or row["relative_image_path"] in images:
+            raise ValueError("Missing patient ID or duplicate image")
+        if patients.setdefault(row["subject_id"], row["partition"]) != row["partition"]:
+            raise ValueError("Patient appears in more than one partition")
+        images.add(row["relative_image_path"])
+        row["label"] = int(row["label"])
+    return sorted(rows, key=lambda row: (row["subject_id"], row["scan_id"],
+                                          int(row["slice_index"]), row["relative_image_path"]))
+
+
+def select_partition(rows, partition):
+    """Keep all slices assigned to one manifest partition, in input order."""
+    if partition not in PARTITIONS:
+        raise ValueError("Choose train, tune, calibration or test explicitly")
+    selected = [row for row in rows if row["partition"] == partition]
+    if not selected:
+        raise ValueError(f"No images in {partition}")
+    return selected
+
+
 def recover_subject(raw_path):
     """Recover the ADNI patient token rather than using the acquisition prefix."""
     matches = re.findall(r"ADNI_(\d+_S_\d+)(?=_|\.|/|$)", raw_path)
     if len(matches) != 1:
         raise ValueError("Expected one ADNI subject identifier")
     return matches[0]
+
+
+def assign_patients(subjects):
+    """Assign sorted diagnosis strata with one PCG64(2026) stream.
+
+    The fixed production counts are AD 133/22/22/44 and NC 275/46/46/92.
+    Return the patient-to-role mapping; image rows inherit the patient's role.
+    """
+    allocations = {"AD": (133,22,22,44), "NC": (275,46,46,92)}
+    rng = np.random.Generator(np.random.PCG64(2026))
+    result = {}
+    for diagnosis in ("AD", "NC"):
+        ids = sorted(r["subject_id"] for r in subjects if r["diagnosis"] == diagnosis)
+        if len(ids) != sum(allocations[diagnosis]):
+            raise ValueError("Unexpected diagnosis population")
+        permutation = rng.permutation(len(ids))
+        start = 0
+        for role, count in zip(PARTITIONS, allocations[diagnosis]):
+            for index in permutation[start:start+count]:
+                result[ids[int(index)]] = role
+            start += count
+    return result
