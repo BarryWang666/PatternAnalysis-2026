@@ -109,6 +109,19 @@ FP32/complex64 and explicit axes make the mathematical adaptation inspectable.
 The implementation follows Rao et al.'s global-filter mechanism, with task
 adaptations for grayscale input and rectangular dimensions.
 
+### Embed slices and add residual global-filter blocks
+
+A stride-16 convolution projects each patch into 256 channels. Learned
+positional embeddings distinguish patch locations. Twelve independent blocks
+use the reference single residual path: normalization, global filter,
+normalization and a channel MLP expanding 256→1024→256 with GELU.
+
+Stochastic depth increases from zero to 0.1 across blocks, dropping whole
+residual branches per example during training. Evaluation disables it. The
+final LayerNorm, mean over the 240 within-image tokens and two-class head
+produce one prediction per slice. This token mean is an internal feature
+operation; it is distinct from averaging predictions from different slices.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

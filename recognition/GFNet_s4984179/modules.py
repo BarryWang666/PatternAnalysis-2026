@@ -54,6 +54,24 @@ class BaselineCNN(nn.Module):
         return self.head(self.stages(images))
 
 
+class PatchEmbed(nn.Module):
+    """Project [B,1,240,256] slices to row-major [B,240,256] patch tokens.
+
+    Kernel/stride 16 preserve a rectangular 15x16 grid without padding.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.grid_size = (15, 16)
+        self.num_patches = 240
+        self.proj = nn.Conv2d(1, 256, kernel_size=16, stride=16)
+
+    def forward(self, images):
+        if images.ndim != 4 or tuple(images.shape[1:]) != (1, 240, 256):
+            raise ValueError("Expected slices shaped [B,1,240,256]")
+        return self.proj(images).flatten(2).transpose(1, 2)
+
+
 class GlobalFilter(nn.Module):
     """Learn a complex frequency filter on an explicit rectangular token grid.
 
@@ -83,3 +101,50 @@ class GlobalFilter(nn.Module):
             spectrum * weight, s=(height, width), dim=(1, 2), norm="ortho",
         )
         return grid.reshape(tokens.shape[0], height * width, self.dim)
+
+
+class MLP(nn.Module):
+    """Expand and contract each token's feature width with GELU."""
+
+    def __init__(self, dim=256):
+        super().__init__()
+        self.fc1 = nn.Linear(dim, 4 * dim)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(4 * dim, dim)
+
+    def forward(self, tokens):
+        return self.fc2(self.act(self.fc1(tokens)))
+
+
+class DropPath(nn.Module):
+    """Per-example stochastic depth, following timm's drop_path implementation."""
+
+    def __init__(self, drop_prob=0.0):
+        super().__init__()
+        if not 0 <= drop_prob < 1:
+            raise ValueError("DropPath probability must be in [0,1)")
+        self.drop_prob = drop_prob
+
+    def forward(self, tokens):
+        if not self.training or self.drop_prob == 0:
+            return tokens
+        keep = 1 - self.drop_prob
+        shape = (tokens.shape[0],) + (1,) * (tokens.ndim - 1)
+        gate = (keep + torch.rand(shape, dtype=tokens.dtype, device=tokens.device)).floor()
+        return tokens * gate / keep
+
+
+class GFNetBlock(nn.Module):
+    """GFNet's norm/filter/norm/MLP branch with one residual connection."""
+
+    def __init__(self, grid_size=(15, 16), dim=256, drop_path=0.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim, eps=1e-6)
+        self.filter = GlobalFilter(grid_size, dim)
+        self.norm2 = nn.LayerNorm(dim, eps=1e-6)
+        self.mlp = MLP(dim)
+        self.drop_path = DropPath(drop_path)
+
+    def forward(self, tokens):
+        branch = self.mlp(self.norm2(self.filter(self.norm1(tokens))))
+        return tokens + self.drop_path(branch)
