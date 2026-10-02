@@ -54,6 +54,20 @@ labels and partition membership; path resolution stays under the caller's
 data root. No pretrained normalization, cropping or augmentation is introduced
 in this initial baseline, so their effects cannot be confused with architecture.
 
+### Sample one acquisition per patient for the initial training design
+
+The initial rationale is to prevent frequent visitors from dominating the
+training stream. For every epoch, choose one acquisition per TRAIN patient,
+retain its twenty slices, and shuffle the concatenated slices. Independent
+PCG64 streams determine visit choice and slice order from seed and epoch.
+Reconstructing the sampler therefore does not consume the model's RNG.
+
+This choice gives 8,160 presentations and 128 batch-64 updates, including a
+final partial batch. It gives patients equal opportunity rather than giving
+all supplied slices equal opportunity. That distinction is a hypothesis with
+consequences for class and visit weighting, not an automatic improvement over
+ordinary image sampling. Evaluation loaders keep every declared slice.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

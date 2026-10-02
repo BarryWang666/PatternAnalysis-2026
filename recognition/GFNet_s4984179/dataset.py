@@ -133,3 +133,36 @@ def assign_patients(subjects):
                 result[ids[int(index)]] = role
             start += count
     return result
+
+
+class SubjectScanSampler:
+    """Choose one scan per TRAIN patient, retain its slices, then shuffle.
+
+    Separate PCG64 streams fix visit choice and slice order per seed/epoch.
+    The fixed manifest has twenty slices per scan: 408 patients give 8,160
+    presentations. All TUNE slices remain available for evaluation.
+    """
+    def __init__(self, data, seed=3710, epoch=0):
+        self.seed, self.epoch = seed, epoch
+        groups = defaultdict(lambda: defaultdict(list))
+        for index,row in enumerate(data.rows):
+            groups[row["subject_id"]][row["scan_id"]].append(index)
+        self.groups = tuple(tuple(tuple(sorted(indices, key=lambda i: (
+            int(data.rows[i]["slice_index"]), data.rows[i]["relative_image_path"])))
+            for _,indices in sorted(scans.items())) for _,scans in sorted(groups.items()))
+    def __iter__(self):
+        rng = np.random.Generator(np.random.PCG64(np.random.SeedSequence([0x5343414E,self.epoch,self.seed])))
+        selected = [i for scans in self.groups for i in scans[int(rng.integers(len(scans)))]]
+        rng = np.random.Generator(np.random.PCG64(np.random.SeedSequence([0x534C4943,self.epoch,self.seed])))
+        return iter(selected[int(i)] for i in rng.permutation(len(selected)))
+    def __len__(self):
+        return sum(len(scans[0]) for scans in self.groups)
+
+
+def make_loader(data, batch_size=64, seed=3710, epoch=0):
+    """Use patient/scan sampling for TRAIN and complete ordered evaluation."""
+    worker_seed = int(np.random.SeedSequence([0x4C4F4144,epoch,seed]).generate_state(1,dtype=np.uint64)[0])
+    generator = torch.Generator().manual_seed(worker_seed)
+    sampler = SubjectScanSampler(data,seed,epoch) if data.partition == "train" else None
+    return DataLoader(data,batch_size=batch_size,sampler=sampler,shuffle=False,
+                      drop_last=False,num_workers=0,generator=generator)
