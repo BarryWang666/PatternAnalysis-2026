@@ -51,6 +51,9 @@ from torch.nn import functional as F
 from dataset import ADNISlices, make_loader, read_manifest
 
 
+from modules import BaselineCNN, GFNet
+
+
 def probabilities(margins):
     """Stable AD probabilities from AD-minus-NC logits."""
     return np.exp(-np.logaddexp(0.0, -np.asarray(margins, dtype=np.float64)))

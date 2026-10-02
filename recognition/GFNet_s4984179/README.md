@@ -122,6 +122,21 @@ final LayerNorm, mean over the 240 within-image tokens and two-class head
 produce one prediction per slice. This token mean is an internal feature
 operation; it is distinct from averaging predictions from different slices.
 
+### Complete the scratch GFNet classifier and tensor-flow explanation
+
+The complete scratch model has 7,276,802 real trainable scalars. Linear and
+positional parameters use truncated-normal initialization; LayerNorm starts
+with unit scales and zero offsets. There is no class token, external encoder
+or pretrained checkpoint. Native rectangular geometry reaches the classifier
+without an image resize.
+
+![Native CNN and GFNet tensor flow](figures/model_architecture.png)
+
+The diagram shows implemented tensor sizes rather than an unmodified RGB
+paper figure. CNN emphasizes local spatial processing; GFNet mixes patch
+features globally. Differences in capacity and regularization remain part of
+the complete-system comparison and prevent a single-factor causal claim.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

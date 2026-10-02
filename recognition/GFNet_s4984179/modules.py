@@ -148,3 +148,39 @@ class GFNetBlock(nn.Module):
     def forward(self, tokens):
         branch = self.mlp(self.norm2(self.filter(self.norm1(tokens))))
         return tokens + self.drop_path(branch)
+
+
+class GFNet(nn.Module):
+    """Classify [B,1,240,256] slices with twelve width-256 GFNet blocks.
+
+    Position embeddings preserve patch location. Token averaging and a linear
+    head return raw NC/AD logits [B,2]; evaluation disables stochastic depth.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.patch_embed = PatchEmbed()
+        self.pos_embed = nn.Parameter(torch.zeros(1, 240, 256))
+        self.blocks = nn.ModuleList(
+            GFNetBlock(self.patch_embed.grid_size, 256, i * 0.1 / 11)
+            for i in range(12)
+        )
+        self.norm = nn.LayerNorm(256, eps=1e-6)
+        self.head = nn.Linear(256, 2)
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        self.apply(self._init_weights)
+
+    @staticmethod
+    def _init_weights(module):
+        if isinstance(module, nn.Linear):
+            nn.init.trunc_normal_(module.weight, std=0.02)
+            nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
+
+    def forward(self, images):
+        tokens = self.patch_embed(images) + self.pos_embed
+        for block in self.blocks:
+            tokens = block(tokens)
+        return self.head(self.norm(tokens).mean(dim=1))
