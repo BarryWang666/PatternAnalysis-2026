@@ -137,6 +137,19 @@ paper figure. CNN emphasizes local spatial processing; GFNet mixes patch
 features globally. Differences in capacity and regularization remain part of
 the complete-system comparison and prevent a single-factor causal claim.
 
+### Configure AdamW and complete effective-batch updates
+
+The optimizer uses AdamW with betas (0.9,0.999), weight decay 0.01 for matrices
+and complex filters, and zero decay for biases, norm vectors and positional
+embeddings. Cross-entropy consumes raw logits and integer NC/AD targets.
+Global gradient norm clipping at 1.0 limits finite spikes; clipping frequency
+is diagnostic and is not itself proof of divergence or a smaller AdamW LR.
+
+The effective batch is 64. A short final batch uses its actual size, and
+sample-weighted epoch loss avoids giving the final small batch the same
+influence as a full batch. Python, NumPy and Torch seeds are explicit so model
+initialization and sampling can be compared under a stated configuration.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
