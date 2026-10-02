@@ -72,6 +72,39 @@ def select_partition(rows, partition):
     return selected
 
 
+class ADNISlices(Dataset):
+    """Load one declared partition from manifest rows under data_root.
+
+    Each item contains image [1,240,256], integer label, path and subject_id.
+    Native grayscale pixels are scaled to [0,1], without resizing or cropping.
+    Paths and patient IDs are metadata only; neither is a model input.
+    """
+
+    def __init__(self, rows, data_root, partition):
+        self.rows = select_partition(rows, partition)
+        self.root = Path(data_root).resolve()
+        self.partition = partition
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, index):
+        row = self.rows[index]
+        path = (self.root / row["relative_image_path"]).resolve()
+        if self.root not in path.parents:
+            raise ValueError("Image resolves outside the data directory")
+        with Image.open(path) as image:
+            if image.format != "JPEG" or image.mode != "L" or image.size != (256, 240):
+                raise ValueError(f"Expected grayscale 256x240 JPEG: {path}")
+            pixels = np.array(image, dtype=np.float32) / 255.0
+        return {
+            "image": torch.from_numpy(pixels[None]),
+            "label": int(row["label"]),
+            "path": row["relative_image_path"],
+            "subject_id": row["subject_id"],
+        }
+
+
 def recover_subject(raw_path):
     """Recover the ADNI patient token rather than using the acquisition prefix."""
     matches = re.findall(r"ADNI_(\d+_S_\d+)(?=_|\.|/|$)", raw_path)

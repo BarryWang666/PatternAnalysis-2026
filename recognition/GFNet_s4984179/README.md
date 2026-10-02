@@ -40,6 +40,20 @@ Keeping all four roles in a manifest prevents a later model from quietly
 using a different population. Correlated slices still do not become thousands
 of independent patients merely because the network consumes individual images.
 
+### Load native grayscale slices without resizing
+
+The observed image canvas is width 256, height 240. The loader returns
+float32 tensors `[1,240,256]` by dividing grayscale values by 255, preserving
+native resolution, aspect ratio and the supplied brain preparation. Converting
+to RGB would repeat information, while square resizing would alter geometry.
+Neither is required for a scratch model.
+
+Only the image enters the network. Labels, patient IDs and relative paths
+remain separate metadata for accounting and analysis. The manifest fixes
+labels and partition membership; path resolution stays under the caller's
+data root. No pretrained normalization, cropping or augmentation is introduced
+in this initial baseline, so their effects cannot be confused with architecture.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
