@@ -68,6 +68,20 @@ all supplied slices equal opportunity. That distinction is a hypothesis with
 consequences for class and visit weighting, not an automatic improvement over
 ordinary image sampling. Evaluation loaders keep every declared slice.
 
+### Define scan probability means and patient-weighted metrics
+
+V1 extends image probabilities into an acquisition summary by averaging its
+twenty AD probabilities. A patient with V acquisitions gives each scan weight
+1/V, making each patient contribute total mass one. The weighted scan NLL is
+then intended to measure probability reliability without letting repeated
+visits dominate the metric.
+
+This operation has a different statistical unit from slice accuracy. Averaging
+can cancel a confident error against other slices, and applying NLL after an
+average is not the same as averaging slice NLL. The code keeps that weighted
+objective explicit rather than calling it image accuracy. This distinction
+will later become central to deciding whether V1 answers the assessment task.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
