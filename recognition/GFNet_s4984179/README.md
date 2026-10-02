@@ -95,6 +95,20 @@ Four stages use 32, 64, 128 and 256 channels. Global spatial averaging and a
 The 1,173,154 parameters are much fewer than GFNet's later configuration, so
 this is a practical baseline, not a parameter-matched isolation of one operator.
 
+### Implement Fourier filtering on the rectangular patch grid
+
+A 240×256 image divided into 16×16 patches has a 15×16 grid, not a square.
+The GlobalFilter reshapes tokens to that explicit grid, applies orthonormal
+rfft2 over its two spatial axes, multiplies learned complex coefficients,
+then uses irfft2 with the original spatial size. The real FFT has a 15×9
+frequency grid; real and imaginary parameters are stored separately.
+
+The operation filters learned features, not MRI acquisition k-space. Taking
+sqrt(token_count) from a square-image reference would give the wrong geometry.
+FP32/complex64 and explicit axes make the mathematical adaptation inspectable.
+The implementation follows Rao et al.'s global-filter mechanism, with task
+adaptations for grayscale input and rectangular dimensions.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

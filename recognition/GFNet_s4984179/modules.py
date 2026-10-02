@@ -52,3 +52,34 @@ class BaselineCNN(nn.Module):
         if images.ndim != 4 or tuple(images.shape[1:]) != (1, 240, 256):
             raise ValueError("Expected slices shaped [B,1,240,256]")
         return self.head(self.stages(images))
+
+
+class GlobalFilter(nn.Module):
+    """Learn a complex frequency filter on an explicit rectangular token grid.
+
+    Adapted from Rao et al., Global Filter Networks (2021):
+    https://github.com/raoyongming/GFNet/blob/master/gfnet.py
+    Input/output: real [B,H*W,C] tokens; weights store H*(W//2+1)*C complex
+    coefficients as pairs of real scalars. FFT axes are spatial, not channels.
+    """
+
+    def __init__(self, grid_size, dim):
+        super().__init__()
+        self.grid_size = tuple(grid_size)
+        self.dim = dim
+        height, width = self.grid_size
+        self.complex_weight = nn.Parameter(
+            torch.randn(height, width // 2 + 1, dim, 2) * 0.02,
+        )
+
+    def forward(self, tokens):
+        height, width = self.grid_size
+        if tokens.ndim != 3 or tuple(tokens.shape[1:]) != (height * width, self.dim):
+            raise ValueError("Tokens must match the declared grid and feature width")
+        grid = tokens.reshape(tokens.shape[0], height, width, self.dim)
+        spectrum = torch.fft.rfft2(grid, dim=(1, 2), norm="ortho")
+        weight = torch.view_as_complex(self.complex_weight.contiguous())
+        grid = torch.fft.irfft2(
+            spectrum * weight, s=(height, width), dim=(1, 2), norm="ortho",
+        )
+        return grid.reshape(tokens.shape[0], height * width, self.dim)
