@@ -82,6 +82,19 @@ average is not the same as averaging slice NLL. The code keeps that weighted
 objective explicit rather than calling it image accuracy. This distinction
 will later become central to deciding whether V1 answers the assessment task.
 
+### Build local CNN stages with small convolution kernels
+
+The CNN provides a simple spatial baseline. Each stage uses two padded 3×3
+convolutions, GroupNorm and GELU, then 2×2 max pooling. Two small kernels add
+nonlinear processing while expanding local context gradually; pooling reduces
+later computation. GroupNorm avoids depending on large per-device batch
+statistics and has the same inference behavior with a short final batch.
+
+Four stages use 32, 64, 128 and 256 channels. Global spatial averaging and a
+256-to-2 linear head give raw NC/AD logits, with no softmax inside the model.
+The 1,173,154 parameters are much fewer than GFNet's later configuration, so
+this is a practical baseline, not a parameter-matched isolation of one operator.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
