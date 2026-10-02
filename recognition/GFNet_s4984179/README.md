@@ -150,6 +150,20 @@ sample-weighted epoch loss avoids giving the final small batch the same
 influence as a full batch. Python, NumPy and Torch seeds are explicit so model
 initialization and sampling can be compared under a stated configuration.
 
+### Save compact epoch boundaries and reproducible random state
+
+A complete boundary needs more than model weights: optimizer moments, global
+update cursor, epoch, selected best state, patience and Python/NumPy/Torch/CUDA
+RNG states determine continuation. A separate selected checkpoint supports
+inference without applying optimizer or training RNG state. Temporary-file
+replacement avoids publishing a half-written file as a completed boundary.
+
+The compact representation keeps scientific continuation state and readable
+configuration/history. Repeated validation scripts and operational submission
+receipts are not part of the learning algorithm. Historical training results
+remain associated with their saved execution sources; simplifying the code
+here does not rerun those experiments or prove byte-equivalent checkpoints.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

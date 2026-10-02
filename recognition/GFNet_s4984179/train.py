@@ -250,3 +250,48 @@ def run_epoch(model, loader, device, *, optimizer=None, step=0, config=None):
         "peak_reserved_bytes": torch.cuda.max_memory_reserved(device) if device.type == "cuda" else None,
     })
     return metrics, records, step
+
+
+def file_digest(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def source_identity():
+    return {name: file_digest(Path(__file__).with_name(name))
+            for name in ("dataset.py", "modules.py", "train.py")}
+
+
+def write_json(path, value):
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def save_checkpoint(path, value):
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp")
+    torch.save(value, temporary)
+    temporary.replace(path)
+
+
+def capture_rng(device):
+    numpy = np.random.get_state()
+    return {
+        "torch": torch.get_rng_state(), "python": random.getstate(),
+        "numpy": (numpy[0], numpy[1].tolist(), numpy[2], numpy[3], numpy[4]),
+        "cuda": torch.cuda.get_rng_state(device) if device.type == "cuda" else None,
+    }
+
+
+def restore_rng(state, device):
+    torch.set_rng_state(state["torch"])
+    random.setstate(state["python"])
+    numpy = state["numpy"]
+    np.random.set_state((numpy[0], np.asarray(numpy[1], dtype=np.uint32), *numpy[2:]))
+    if device.type == "cuda":
+        torch.cuda.set_rng_state(state["cuda"], device)
