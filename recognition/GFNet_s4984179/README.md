@@ -205,6 +205,19 @@ prediction, real error examples and computational cost should jointly inform
 an engineering recommendation. The one-page review and later tutor clarification
 are evidence documents, not a reason to call unfinished experiments complete.
 
+### Define a global cosine schedule and explicit NLL stopping policy
+
+The formal horizon is 60 sampled epochs, 7,680 updates. Warmup uses 640
+updates, followed by cosine decay to 1% of peak. The global update index,
+rather than the process's local epoch count, prevents resume from restarting
+the schedule. Candidate peaks are 1e-4, 3e-4 and 1e-3.
+
+Strict-best weighted scan NLL selects checkpoints. A separate patience anchor
+requires an improvement of at least 1e-4; small strict-best improvements do
+not continually reset patience. Stop after at least thirty epochs with twelve
+non-improving epochs, or at sixty. This makes selection and stopping reproducible,
+but it does not establish that weighted scan NLL is the right assessment target.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

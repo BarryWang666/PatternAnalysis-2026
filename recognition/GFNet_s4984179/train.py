@@ -155,6 +155,27 @@ def learning_rate(step, total_steps, warmup_steps, peak):
     return peak * (0.01 + 0.99 * fraction)
 
 
+def is_better(candidate, best):
+    """Strictly minimize subject-weighted scan NLL; exact ties stay earlier."""
+    return best is None or candidate["weighted_scan_nll"] < best["weighted_scan_nll"]
+
+
+def advance_selection(tune, best, bad_epochs, epoch, config, anchor=None):
+    """Keep strict-best weights separately from the min-delta patience anchor."""
+    value = tune["weighted_scan_nll"]
+    if anchor is None or value <= anchor - config.min_delta:
+        anchor, bad_epochs = value, 0
+    else:
+        bad_epochs += 1
+    selected = is_better(tune,best)
+    if selected:
+        best = {"epoch":epoch,"n":tune["n"],"correct":tune["correct"],
+                "nll":tune["nll"],"weighted_scan_nll":value}
+    reason = "epoch_cap" if epoch == config.max_epochs else (
+        "patience" if epoch >= config.min_epochs and bad_epochs >= config.patience else None)
+    return best,bad_epochs,selected,reason,anchor
+
+
 def probabilities(margins):
     """Stable AD probabilities from AD-minus-NC logits."""
     return np.exp(-np.logaddexp(0.0, -np.asarray(margins, dtype=np.float64)))
