@@ -86,6 +86,47 @@ def seed_everything(seed):
     torch.manual_seed(seed)
 
 
+def a100_runtime(seed):
+    """Initialize the assigned A100, deterministic FP32, seed and 2/1 threads.
+
+    Return a CUDA device and measured runtime metadata. Call once at entry,
+    before model construction or computation; keep Slurm's device assignment.
+    """
+    partition = os.environ.get("SLURM_JOB_PARTITION", "").split(",")[0]
+    if (not os.environ.get("SLURM_JOB_ID", "").isdigit()
+            or os.environ.get("SLURM_JOB_ACCOUNT") != "comp3710"
+            or partition not in ("a100", "comp3710")):
+        raise RuntimeError("Run inside a comp3710 allocation on an A100 partition")
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    torch.set_num_threads(2)
+    torch.set_num_interop_threads(1)
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
+        torch.backends.fp32_precision = "ieee"
+        torch.backends.cuda.matmul.fp32_precision = "ieee"
+        torch.backends.cudnn.fp32_precision = "ieee"
+    else:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+    if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
+        raise RuntimeError("One allocated CUDA device is required")
+    hardware = torch.cuda.get_device_properties(0)
+    if "A100" not in hardware.name:
+        raise RuntimeError(f"Expected an A100, found {hardware.name}")
+    seed_everything(seed)
+    runtime = {
+        "job": os.environ["SLURM_JOB_ID"], "node": platform.node(),
+        "partition": partition, "gpu": hardware.name,
+        "uuid": str(getattr(hardware, "uuid", "unavailable")),
+        "python": platform.python_version(), "torch": str(torch.__version__),
+        "cuda": torch.version.cuda, "numpy": np.__version__,
+        "threads": [torch.get_num_threads(), torch.get_num_interop_threads()],
+    }
+    return torch.device("cuda:0"), runtime
+
+
 def build_model(name):
     return {"cnn": BaselineCNN, "gfnet": GFNet}[name]()
 

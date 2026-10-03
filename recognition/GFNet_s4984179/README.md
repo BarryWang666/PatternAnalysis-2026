@@ -164,6 +164,20 @@ receipts are not part of the learning algorithm. Historical training results
 remain associated with their saved execution sources; simplifying the code
 here does not rerun those experiments or prove byte-equivalent checkpoints.
 
+### Establish allocated A100 execution and initial resource feasibility
+
+Native FP32/complex64 execution uses an actual allocated A100 and deterministic
+operations with TF32 disabled. Hardware is identified from the visible device,
+not inferred from a partition label. Runtime records include software, device
+identity and thread settings; reproducibility remains scoped to that setup.
+
+Saved job 624327 passed the initial GPU phases. Batch 64's allocated training
+peaks were 8.697 GiB for CNN and 2.603 GiB for GFNet, against 39.081 GiB
+initially free. The preliminary batch-of-twenty inference benchmark measured
+median/p95 8.257/8.450 ms for CNN and 8.005/8.181 ms for GFNet. It included
+forward, softmax and probability mean, excluding image decode and transfer;
+it was not single-slice end-to-end latency or trained-model accuracy.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
