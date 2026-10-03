@@ -192,6 +192,19 @@ completed formal-fit durations. These results support native batch-64 execution
 and boundary resume, while classification capability and confidence reliability
 remain separate research questions.
 
+### Explain feasibility, research priorities and measured limits
+
+The feasibility review joins four considerations: patient-disjoint data,
+rectangular architecture implementation, measured A100 resources, and testable
+classification/reliability questions. The evidence supports an executable
+prototype; it does not support a clinical claim or an 80% accuracy guarantee.
+
+Confidence must be examined alongside correctness, including confident wrong
+predictions and false negatives. Classification, calibration, selective
+prediction, real error examples and computational cost should jointly inform
+an engineering recommendation. The one-page review and later tutor clarification
+are evidence documents, not a reason to call unfinished experiments complete.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
