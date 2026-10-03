@@ -178,6 +178,20 @@ median/p95 8.257/8.450 ms for CNN and 8.005/8.181 ms for GFNet. It included
 forward, softmax and probability mean, excluding image decode and transfer;
 it was not single-slice end-to-end latency or trained-model accuracy.
 
+### Record five-epoch pilots and exact boundary continuation
+
+Saved job 625831 completed five control epochs and a fresh-process continuation
+for each model. The saved model/optimizer/RNG/progress comparisons matched
+exactly. New ADNI work was 1,536 updates, 97,920 TRAIN and 34,320 TUNE
+presentations, counting only newly executed work rather than inherited histories.
+
+The measured steady epoch medians were 43.74 seconds for CNN and 42.37 seconds
+for GFNet under the sampled training recipe. Typical 60-epoch extrapolations
+were 43.93 and 42.59 minutes, with larger cautious estimates; they were not
+completed formal-fit durations. These results support native batch-64 execution
+and boundary resume, while classification capability and confidence reliability
+remain separate research questions.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
