@@ -231,6 +231,19 @@ may run only a segment of the global horizon. This distinction matters when
 Slurm wall-time or storage limits require segmentation; a saved history must
 not be counted as new training when it is loaded again.
 
+### Record native A100 continuation of the formal training core
+
+Saved job 629388 passed six phases and four learning invocations on A100.
+It executed 768 new updates with 48,960 TRAIN and 17,160 TUNE presentations.
+Saved CPU comparisons found exact functional continuation; the recovery did
+not repeat learning to manufacture a successful comparison.
+
+CNN/GFNet maximum allocated memory remained about 8.697/2.603 GiB. Recorded
+complete epoch times included checkpoint persistence and differed from the
+earlier pilot timings. This is why the cost discussion separates measured
+scopes and avoids treating one preliminary median as a guaranteed full-fit
+or inference latency.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
