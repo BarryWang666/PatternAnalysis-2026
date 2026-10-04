@@ -357,3 +357,98 @@ def restore_rng(state, device):
     np.random.set_state((numpy[0], np.asarray(numpy[1], dtype=np.uint32), *numpy[2:]))
     if device.type == "cuda":
         torch.cuda.set_rng_state(state["cuda"], device)
+
+
+def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
+        runtime, *, resume=False, epochs=None):
+    """Fit TRAIN/TUNE datasets and persist complete epoch boundaries.
+
+    epochs limits this invocation; config.max_epochs retains the LR horizon.
+    resume restores latest weights, optimizer, RNG, progress and patience.
+    Return epoch history, selecting best by subject-weighted scan NLL.
+    """
+    config.validate()
+    if train_data.partition != "train" or tune_data.partition != "tune":
+        raise ValueError("Fit accepts only TRAIN and TUNE")
+    if epochs is not None and epochs < 1:
+        raise ValueError("Segment length must be positive")
+    output = Path(output)
+    saved = None
+    if resume:
+        saved = torch.load(output / "latest.pt", map_location="cpu", weights_only=True)
+        if (saved["format"] != "sampled-latest-v1"
+                or saved["identity"]["config"] != asdict(config)
+                or saved["identity"]["manifest_sha256"] != manifest_sha256):
+            raise ValueError("Resume requires matching configuration and manifest")
+        if saved["status"] == "complete":
+            raise ValueError("This fit already completed")
+        if (saved["rng"]["cuda"] is None) != (device.type == "cpu"):
+            raise ValueError("Resume on the same device type")
+    else:
+        output.mkdir(parents=True, exist_ok=True)
+        if any(output.iterdir()):
+            raise FileExistsError("Use an empty output directory or --resume")
+    model.to(device)
+    optimizer = build_optimizer(model, config)
+    identity = {"config": asdict(config), "manifest_sha256": manifest_sha256,
+                "sources": source_identity()}
+    runtime = {**runtime, "sources": source_identity()}
+    history, best, best_checkpoint = [], None, None
+    bad_epochs, step, completed = 0, 0, 0
+    anchor = None
+    if saved is not None:
+        identity = saved["identity"]
+        model.load_state_dict(saved["model"])
+        optimizer.load_state_dict(saved["optimizer"])
+        history, best, best_checkpoint = saved["history"], saved["best"], saved["best_checkpoint"]
+        bad_epochs, step, completed = saved["bad_epochs"], saved["step"], saved["epoch"]
+        anchor = saved["anchor"]
+        # latest is authoritative if a stop interrupted the separate best export.
+        save_checkpoint(output / "best.pt", best_checkpoint)
+        restore_rng(saved["rng"], device)
+    else:
+        write_json(output / "config.json", {**identity, "runtime": runtime})
+    stop_epoch = min(config.max_epochs, completed + (epochs or config.max_epochs))
+    for epoch in range(completed + 1, stop_epoch + 1):
+        train_loader = make_loader(train_data, config.batch_size, config.seed, epoch - 1)
+        tune_loader = make_loader(tune_data, config.batch_size, config.seed)
+        train_result, _, step = run_epoch(
+            model, train_loader, device, optimizer=optimizer, step=step, config=config,
+        )
+        tune_result, _, _ = run_epoch(model, tune_loader, device)
+        best, bad_epochs, selected, reason, anchor = advance_selection(
+            tune_result, best, bad_epochs, epoch, config, anchor,
+        )
+        if selected:
+            best_checkpoint = {
+                "format": "sampled-best-v1", "identity": identity, "epoch": epoch,
+                "tune": tune_result,
+                "model": {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
+            }
+        history.append({"epoch": epoch, "updates": step, "train": train_result,
+                        "tune": tune_result, "lr": optimizer.param_groups[0]["lr"], "runtime": runtime})
+        status = "complete" if reason else "paused"
+        save_checkpoint(output / "latest.pt", {
+            "format": "sampled-latest-v1", "identity": identity, "epoch": epoch,
+            "step": step, "best": best, "bad_epochs": bad_epochs, "anchor": anchor,
+            "status": status, "stop_reason": reason,
+            "model": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+            "optimizer": optimizer.state_dict(), "history": history,
+            "rng": capture_rng(device), "best_checkpoint": best_checkpoint,
+        })
+        if selected:
+            save_checkpoint(output / "best.pt", best_checkpoint)
+        write_json(output / "history.json", history)
+        write_json(output / "result.json", {
+            "status": status, "epoch": epoch, "updates": step,
+            "stop_reason": reason, "best": best,
+            "train_presentations": epoch * len(train_loader.sampler),
+            "tune_presentations": epoch * len(tune_data),
+        })
+        print(f"epoch={epoch} lr={optimizer.param_groups[0]['lr']:.6g} "
+              f"train_acc={train_result['accuracy']:.4f} tune_acc={tune_result['accuracy']:.4f} "
+              f"tune_nll={tune_result['nll']:.4f} "
+              f"hc_fn={tune_result['high_confidence_false_negatives']}", flush=True)
+        if reason:
+            break
+    return history

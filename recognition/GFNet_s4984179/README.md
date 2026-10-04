@@ -218,6 +218,19 @@ not continually reset patience. Stop after at least thirty epochs with twelve
 non-improving epochs, or at sixty. This makes selection and stopping reproducible,
 but it does not establish that weighted scan NLL is the right assessment target.
 
+### Integrate training, full TUNE evaluation and continuation
+
+The integrated fit reconstructs the patient's visit sampler for each epoch,
+updates on its 8,160 slices, and evaluates every one of the 2,860 TUNE slices
+with fixed weights and no gradients. TUNE records then produce both raw-slice
+diagnostics and the declared aggregated selection statistic.
+
+Resume restores the last completed boundary, optimizer, RNG, schedule cursor
+and controller rather than creating a replacement seed or fit. An invocation
+may run only a segment of the global horizon. This distinction matters when
+Slurm wall-time or storage limits require segmentation; a saved history must
+not be counted as new training when it is loaded again.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
