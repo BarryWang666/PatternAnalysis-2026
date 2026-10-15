@@ -452,3 +452,23 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
         if reason:
             break
     return history
+
+
+def experiment_plan():
+    """Reserve six seed-3710 LR fits and four additional selected-LR fits."""
+    peaks=(1e-4,3e-4,1e-3)
+    development=[dict(model=m,seed=3710,lr=lr) for m in ("cnn","gfnet") for lr in peaks]
+    additional=[dict(model=m,seed=seed,lr=None) for m in ("cnn","gfnet") for seed in (3711,3712)]
+    return dict(development=development,additional=additional,reuse_winning_seed=3710)
+
+
+def select_development(records):
+    """Require all six candidates, then minimize best weighted scan NLL."""
+    records=list(records)
+    expected={(m,3710,lr) for m in ("cnn","gfnet") for lr in (1e-4,3e-4,1e-3)}
+    keys=[(r["model"],r["seed"],r["lr"]) for r in records]
+    if len(keys)!=6 or set(keys)!=expected or any(r["status"]!="complete" for r in records):
+        raise ValueError("Selection requires exactly six completed development fits")
+    return {m:min((r for r in records if r["model"]==m),
+        key=lambda r:(r["best"]["weighted_scan_nll"],(1e-4,3e-4,1e-3).index(r["lr"])))
+        for m in ("cnn","gfnet")}

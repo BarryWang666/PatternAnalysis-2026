@@ -244,6 +244,19 @@ earlier pilot timings. This is why the cost discussion separates measured
 scopes and avoids treating one preliminary median as a guaranteed full-fit
 or inference latency.
 
+### Reserve development fits and predeclare the LR selection barrier
+
+The experiment plan reserves six development fits: two architectures × three
+peaks with seed 3710. Only after all six finish does V1 select each model's
+minimum best weighted scan NLL, breaking exact ties by the declared LR order.
+Four conditional fits add seeds 3711 and 3712 at those selected peaks.
+
+The winning seed-3710 fit is reused, limiting the total to ten fits rather
+than retraining the favorable run. Patient populations and schedules must be
+consistent between candidates, including their complete declared horizons.
+These controls prevent accidental candidate replacement, but the scientific
+validity of the selection objective still needs examination.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
