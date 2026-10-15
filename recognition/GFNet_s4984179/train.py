@@ -472,3 +472,40 @@ def select_development(records):
     return {m:min((r for r in records if r["model"]==m),
         key=lambda r:(r["best"]["weighted_scan_nll"],(1e-4,3e-4,1e-3).index(r["lr"])))
         for m in ("cnn","gfnet")}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--data-root", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--model", choices=("cnn", "gfnet"), required=True)
+    parser.add_argument("--lr", type=float, required=True)
+    parser.add_argument("--seed", type=int, default=3710)
+    parser.add_argument("--weight-decay", type=float, default=0.01)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--max-epochs", type=int, default=60)
+    parser.add_argument("--warmup-epochs", type=int, default=5)
+    parser.add_argument("--min-epochs", type=int, default=30)
+    parser.add_argument("--patience", type=int, default=12)
+    parser.add_argument("--min-delta", type=float, default=1e-4)
+    parser.add_argument("--epochs", type=int, help="Additional complete epochs this invocation; keep the global LR horizon")
+    parser.add_argument("--resume", action="store_true", help="Continue this output directory's latest.pt")
+    args = parser.parse_args()
+    config = Config(**{key: getattr(args, key) for key in Config.__dataclass_fields__})
+    config.validate()
+    source, output = Path(__file__).parent.resolve(), Path(args.output).resolve()
+    if output == source or source in output.parents:
+        parser.error("Keep run outputs outside the source folder")
+    rows = read_manifest(args.manifest)
+    train_data = ADNISlices(rows, args.data_root, "train")
+    tune_data = ADNISlices(rows, args.data_root, "tune")
+    device, runtime = a100_runtime(config.seed)
+    print(json.dumps({"train_slices": len(train_data), "tune_slices": len(tune_data),
+                      "config": asdict(config), "runtime": runtime}), flush=True)
+    fit(build_model(config.model), train_data, tune_data, config, output,
+        file_digest(args.manifest), device, runtime, resume=args.resume, epochs=args.epochs)
+
+
+if __name__ == "__main__":
+    main()

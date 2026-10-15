@@ -257,6 +257,19 @@ consistent between candidates, including their complete declared horizons.
 These controls prevent accidental candidate replacement, but the scientific
 validity of the selection objective still needs examination.
 
+### Expose one direct fit command with explicit pause and resume
+
+The executable training entry chooses model, LR, seed and output directory,
+reads the fixed manifest and initializes its allocated runtime before model
+construction. Fresh output directories prevent silently mixing histories.
+The same command with resume continues the saved experiment and global horizon.
+
+The compact interface expresses one fit rather than embedding a scheduler
+framework inside the trainer. Cluster submission scripts, queues and recovery
+records stay external. A command that exits after a requested segment can
+leave an active paused fit; that is not a terminal training result and must
+not be treated as a completed LR candidate.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
