@@ -270,6 +270,20 @@ records stay external. A command that exits after a requested segment can
 leave an active paused fit; that is not a terminal training result and must
 not be treated as a completed LR candidate.
 
+### Fit scan temperature and a fixed rejection policy on CALIBRATION
+
+V1 fits one positive temperature per model/seed on CALIBRATION scan means,
+using the fixed 201-point geometric grid from 0.05 to 20 plus 1. The chosen
+value minimizes weighted NLL; exact ties prefer closeness to one, then smaller
+temperature. This changes probability scale, not the learned feature extractor.
+
+The highest confidence threshold reaching at least 80% patient-weighted scan
+coverage is then frozen, including all exact-confidence ties. Exact rational
+1/V masses avoid changing eligibility through floating-point summation.
+Evaluation applies the same temperature/threshold without refitting. Coverage
+is a retained-prediction proportion, not an accuracy requirement, and scan
+calibration does not establish calibrated slice probabilities.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

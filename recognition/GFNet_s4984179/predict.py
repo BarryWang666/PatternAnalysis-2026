@@ -56,3 +56,66 @@ def profile_scan(model, images):
     return dict(timings_ms=timings,median_ms=float(np.median(timings)),
                 p95_ms=float(np.percentile(timings,95,method='linear')),
                 peak_allocated_bytes=torch.cuda.max_memory_allocated(images.device))
+
+
+def temperature_scale(probability, temperature):
+    """Apply positive temperature to clipped scan logits, without fitting."""
+    p=np.clip(np.asarray(probability,dtype=float),1e-7,1-1e-7)
+    if not math.isfinite(temperature) or temperature<=0:
+        raise ValueError('Temperature must be finite and positive')
+    return probabilities(np.log(p/(1-p))/temperature)
+
+
+def selective_metrics(labels, probability, weights, threshold):
+    """Measure fixed-policy acceptance; preserve full-population AD support."""
+    y,p,w=np.asarray(labels),np.asarray(probability),np.asarray(weights,dtype=float)
+    accepted=np.maximum(p,1-p)>=threshold
+    correct=(p>=.5)==y
+    total=math.fsum(w)
+    mass=math.fsum(w[accepted])
+    risk=math.fsum(w[accepted & ~correct])/mass if mass else None
+    ad=math.fsum(w[y==1])
+    return dict(coverage=mass/total,rejected_fraction=math.fsum(w[~accepted])/total,
+        accepted_count=int(accepted.sum()),risk=risk,
+        accepted_false_negatives=int(np.sum(accepted & (y==1) & (p<.5))),
+        accepted_fn_fraction_all_AD=math.fsum(w[accepted & (y==1) & (p<.5)])/ad if ad else None)
+
+
+def fit_scan_policy(rows, records):
+    """Fit scan temperature and a >=80% weighted-coverage threshold on CALIBRATION."""
+    if not rows or any(r['partition']!='calibration' for r in rows):
+        raise ValueError('Fit only the CALIBRATION population')
+    scans=scan_summary(rows,records)['scans']
+    y=[r['label'] for r in scans];p=[r['probability_ad'] for r in scans];w=[r['weight'] for r in scans]
+    temperatures=np.unique(np.r_[np.geomspace(.05,20.,201),1.])
+    candidates=[(weighted_probability_metrics(y,temperature_scale(p,float(t)),w)['nll'],abs(float(t)-1),float(t))
+                for t in temperatures]
+    nll,_,temperature=min(candidates)
+    q=temperature_scale(p,temperature);confidence=np.maximum(q,1-q)
+    exact=[Fraction(1,r['visits']) for r in scans]
+    for threshold in np.unique(confidence)[::-1]:
+        mass=sum((v for v,c in zip(exact,confidence) if c>=threshold),Fraction(0))
+        if mass/sum(exact,Fraction(0))>=Fraction(4,5): break
+    return dict(temperature=temperature,threshold=float(threshold),fit_partition='calibration',
+                target_coverage=.8,nll=nll,slice_count=len(rows),
+                calibration=selective_metrics(y,q,w,float(threshold)))
+
+
+def apply_scan_policy(policy, rows, records):
+    """Apply an already fitted scan policy; evaluation never changes its parameters."""
+    scans=scan_summary(rows,records)['scans']
+    y=[r['label'] for r in scans];w=[r['weight'] for r in scans]
+    p=temperature_scale([r['probability_ad'] for r in scans],policy['temperature'])
+    return dict(metrics=weighted_probability_metrics(y,p,w),
+                selective=selective_metrics(y,p,w,policy['threshold']))
+
+
+def risk_coverage_curve(labels, probability, weights=None):
+    """Return descriptive points admitting whole tied-confidence groups."""
+    y,p=np.asarray(labels),np.asarray(probability)
+    w=np.ones(len(y)) if weights is None else np.asarray(weights)
+    confidence=np.maximum(p,1-p)
+    result=[dict(coverage=0.,risk=None,threshold=None)]
+    for threshold in np.unique(confidence)[::-1]:
+        result.append(dict(threshold=float(threshold),**selective_metrics(y,p,w,float(threshold))))
+    return result
