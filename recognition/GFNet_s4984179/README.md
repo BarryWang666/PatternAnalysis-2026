@@ -325,6 +325,19 @@ Raw decisions define errors; rounded calibrated decisions do not rewrite them.
 This rule makes examples reproducible, but model uncertainty does not establish
 that a case is medically ambiguous without clinical annotation.
 
+### Describe preparation confounding without claiming causal disease features
+
+The prepared slices have different index-start groups. A sensitivity report
+shows full support, individual start groups and the common 78/88 subset,
+keeping the fitted calibration policy fixed. Included visit counts determine
+subset patient weights; the original metadata are not overwritten.
+
+Per-class support and patient counts accompany results because a group with
+many NC images can have high overall accuracy for an unhelpful classifier.
+Subjects can appear in several preparation groups, so group counts are not
+additive independent cohorts. Neither a subgroup difference nor its disappearance
+proves that scanner/preparation confounding has been removed.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

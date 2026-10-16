@@ -364,3 +364,19 @@ def select_failure_cases(rows, predictions, policies):
         if chosen: used.add(chosen['subject_id'])
         result.append(dict(slot=name,fallback=fallback,case=chosen))
     return result
+
+
+def preparation_sensitivity(rows,records,policy):
+    """Describe acquisition slice-start strata with unchanged fitted policy."""
+    starts=defaultdict(list)
+    for row in rows: starts[(row['subject_id'],row['scan_id'])].append(int(row['slice_index']))
+    groups={key:min(indices) for key,indices in starts.items()}
+    reports={}
+    for name,allowed in [('full',set(groups.values())),('common_78_88',{78,88})]+[(f'start_{s}',{s}) for s in sorted(set(groups.values()))]:
+        included=[r for r in rows if groups[r['subject_id'],r['scan_id']] in allowed]
+        paths={r['relative_image_path'] for r in included}
+        predictions=[r for r in records if r['path'] in paths]
+        reports[name]=dict(slice_count=len(included),subject_count=len({r['subject_id'] for r in included}),
+            raw=hierarchy_report(included,predictions) if included else None,
+            calibrated=apply_scan_policy(policy,included,predictions) if included else None)
+    return reports
