@@ -378,6 +378,19 @@ used as evidence that these raw slice confidences are reliable. This unresolved
 mismatch is retained in the record rather than hidden behind a calibrated
 aggregate or a favorable accepted subset.
 
+### Compose saved-output analysis without retraining or refitting
+
+The final analysis combines classification, confidence, fixed-policy selective
+performance, paired intervals, deterministic error candidates and preparation
+sensitivity from saved prediction tables. It materializes a stable keyed join
+once so input ordering cannot change the population or duplicate observations.
+
+Scientific composition remains distinct from model authentication. A pure
+report can be checked synthetically without Torch execution, but those checks
+do not establish genuine checkpoint inference or generalization. Saved real
+results must identify their own data role, model selection and calibration
+history before they support an engineering recommendation.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
