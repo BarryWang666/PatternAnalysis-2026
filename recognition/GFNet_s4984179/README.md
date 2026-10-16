@@ -352,6 +352,19 @@ Margins preserve ranking when probabilities saturate near zero or one.
 The prediction API initially accepts TUNE and CALIBRATION; an ordinary prediction
 flag does not automatically authorize a later final TEST evaluation.
 
+### Bind calibration records to the model and population that produced them
+
+A fitted temperature/threshold is meaningful only for its chosen model, seed,
+checkpoint and population. The calibration result therefore carries these
+identities separately from the provenance of a later evaluation. A temperature
+estimated for a scan mean is not transferred to individual slices by renaming it.
+
+The policy can be applied repeatedly to saved records without fitting again.
+Checks of table consistency establish arithmetic relationships, not that a
+model actually produced the table. Genuine allocated inference remains a
+separate source of evidence. This prevents a successful synthetic validator
+from being presented as a completed real-data calibration experiment.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
