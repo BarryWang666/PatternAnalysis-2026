@@ -298,6 +298,19 @@ for an uninformative classifier, so no one score substitutes for capability.
 The legacy V1 bins and clipped probability NLL remain identified with their
 saved results rather than being silently relabelled as a later metric recipe.
 
+### Define paired patient-cluster bootstrap comparisons
+
+The bootstrap resamples patients within diagnosis strata using shared
+PCG64(9001) draws for all six model/seed outputs. Each draw keeps a patient's
+visits and slices together, preserves multiplicity and applies fixed fitted
+policies. Slices from one patient therefore do not count as independent people.
+
+Two thousand replicates provide percentile intervals for individual seeds,
+mean-over-seeds results and paired GFNet-minus-CNN differences. Undefined
+replicates invalidate incomplete intervals rather than becoming zeros. These
+intervals are conditional on fitted models, calibration and this cohort; they
+do not include all retraining uncertainty or external-population shift.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

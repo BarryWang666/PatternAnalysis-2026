@@ -267,3 +267,51 @@ def risk_coverage_curve(labels, probability, weights=None):
     for threshold in np.unique(confidence)[::-1]:
         result.append(dict(threshold=float(threshold),**selective_metrics(y,p,w,float(threshold))))
     return result
+
+
+def paired_subject_bootstrap(rows, predictions, policies, replicates=2000, seed=9001):
+    """Shared diagnosis-stratified patient draws, preserving visits and multiplicity.
+
+    predictions/policies map (model, training_seed) to saved records/fixed policy.
+    No model training or calibration fitting occurs. Percentile intervals are
+    conditional on the fitted models, policies, cohort and patient partition.
+    """
+    groups=defaultdict(list)
+    for row in rows: groups[row['subject_id']].append(row)
+    strata=[[s for s in sorted(groups) if int(groups[s][0]['label'])==label] for label in (0,1)]
+    if any(not ids for ids in strata): raise ValueError('Both diagnosis strata are required')
+    expected={(m,s) for m in ('cnn','gfnet') for s in (3710,3711,3712)}
+    if set(predictions)!=expected or set(policies)!=expected: raise ValueError('Need the fixed six-model roster')
+    tables={slot:{r['path']:r for r in records} for slot,records in predictions.items()}
+    def point(selected,slot):
+        samples=[];joined=[]
+        for draw_id,subject in enumerate(selected):
+            for row in groups[subject]:
+                path=f"{draw_id}:{row['relative_image_path']}"
+                samples.append(dict(row,relative_image_path=path,subject_id=f'{draw_id}:{subject}'))
+                joined.append(dict(tables[slot][row['relative_image_path']],path=path,subject_id=f'{draw_id}:{subject}'))
+        raw=classification_report(joined)
+        calibrated=apply_scan_policy(policies[slot],samples,joined)
+        return dict(slice_accuracy=raw['accuracy'],slice_nll=raw['nll'],
+                    selective_risk=calibrated['selective']['risk'])
+    def flatten(selected):
+        per={slot:point(selected,slot) for slot in sorted(expected)}
+        values={f'{m}/{s}/{metric}':v for (m,s),metrics in per.items() for metric,v in metrics.items()}
+        for metric in next(iter(per.values())):
+            means={m:float(np.mean([per[m,s][metric] for s in (3710,3711,3712)]))
+                   if all(per[m,s][metric] is not None for s in (3710,3711,3712)) else None for m in ('cnn','gfnet')}
+            values.update({f'{m}/mean/{metric}':v for m,v in means.items()})
+            values[f'gfnet-minus-cnn/mean/{metric}']=means['gfnet']-means['cnn'] if all(v is not None for v in means.values()) else None
+            for s in (3710,3711,3712):
+                a,b=per['gfnet',s][metric],per['cnn',s][metric]
+                values[f'gfnet-minus-cnn/{s}/{metric}']=a-b if a is not None and b is not None else None
+        return values
+    points=flatten(sorted(groups)); draws={k:[] for k in points}
+    rng=np.random.Generator(np.random.PCG64(seed))
+    for _ in range(replicates):
+        selected=[ids[int(i)] for ids in strata for i in rng.integers(len(ids),size=len(ids))]
+        for key,value in flatten(selected).items(): draws[key].append(value)
+    return {key:dict(point=value,interval=np.percentile(draws[key],[2.5,97.5],method='linear').tolist()
+                    if all(v is not None for v in draws[key]) else None,
+                    valid_replicates=sum(v is not None for v in draws[key]),replicates=replicates)
+            for key,value in points.items()}
