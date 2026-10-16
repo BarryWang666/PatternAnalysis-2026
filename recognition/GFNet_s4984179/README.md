@@ -365,6 +365,19 @@ model actually produced the table. Genuine allocated inference remains a
 separate source of evidence. This prevents a successful synthetic validator
 from being presented as a completed real-data calibration experiment.
 
+### Separate raw slice confidence from calibrated scan confidence
+
+The teacher's accuracy clarification makes the complete image denominator
+explicit: each input is one 2D slice. A high-confidence slice error is therefore
+an incorrect individual classification with raw confidence at least 0.90,
+including false negatives that remain confidently labelled NC.
+
+V1's raw-slice report exposes this assessed unit even though its older trainer
+still selects through weighted scan NLL. Calibration of scan means cannot be
+used as evidence that these raw slice confidences are reliable. This unresolved
+mismatch is retained in the record rather than hidden behind a calibrated
+aggregate or a favorable accepted subset.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
