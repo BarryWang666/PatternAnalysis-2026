@@ -284,6 +284,20 @@ Evaluation applies the same temperature/threshold without refitting. Coverage
 is a retained-prediction proportion, not an accuracy requirement, and scan
 calibration does not establish calibrated slice probabilities.
 
+### Report classification denominators and raw confidence explicitly
+
+Raw slice accuracy is correct images divided by all images. Additional V1
+views average probabilities within scans and then patients, making their
+extra aggregation assumptions visible. Confusion matrices, class recalls,
+macro-F1 and AUROC reveal failures concealed by a single accuracy value.
+
+Raw confidence is the larger class probability. NLL, Brier score, reliability
+bins, high-confidence error/FN counts and confidence-based error detection
+address whether confidence is useful. ECE depends on binning and can look good
+for an uninformative classifier, so no one score substitutes for capability.
+The legacy V1 bins and clipped probability NLL remain identified with their
+saved results rather than being silently relabelled as a later metric recipe.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

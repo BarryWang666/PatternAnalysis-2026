@@ -58,6 +58,154 @@ def profile_scan(model, images):
                 peak_allocated_bytes=torch.cuda.max_memory_allocated(images.device))
 
 
+def auroc(labels, scores):
+    """Binary AUROC with average ranks for tied AD scores."""
+    labels, scores = np.asarray(labels), np.asarray(scores)
+    positive = int(labels.sum())
+    negative = len(labels) - positive
+    if not positive or not negative:
+        return None
+    order = np.argsort(scores, kind="stable")
+    ranks = np.empty(len(scores), dtype=float)
+    start = 0
+    while start < len(order):
+        stop = start + 1
+        while stop < len(order) and scores[order[stop]] == scores[order[start]]:
+            stop += 1
+        ranks[order[start:stop]] = (start + 1 + stop) / 2
+        start = stop
+    return float((ranks[labels == 1].sum() - positive * (positive + 1) / 2)
+                 / (positive * negative))
+
+
+def classification_report(records):
+    """Report classification from records containing label and raw margin.
+
+    Include every supplied slice. Return confusion, class precision/recall/F1,
+    macro-F1, AD AUROC and training-compatible diagnostics; undefined values are None.
+    """
+    records = list(records)
+    labels = [row["label"] for row in records]
+    margins = [row["margin"] for row in records]
+    result = slice_metrics(labels, margins)
+    matrix = result["confusion"]
+    classes = {}
+    for label, name in enumerate(("NC", "AD")):
+        tp = matrix[label][label]
+        support = sum(matrix[label])
+        chosen = sum(row[label] for row in matrix)
+        classes[name] = {
+            "support": support, "predicted": chosen,
+            "precision": tp / chosen if chosen else None,
+            "recall": tp / support if support else None,
+            "f1": 2 * tp / (support + chosen) if support + chosen else None,
+        }
+    f1 = [value["f1"] for value in classes.values()]
+    result.update({
+        "per_class": classes,
+        "macro_f1": float(np.mean(f1)) if all(value is not None for value in f1) else None,
+        "auroc": auroc(labels, margins),
+    })
+    return result
+
+
+def confidence_report(records):
+    """Add raw confidence reliability and error-discrimination diagnostics."""
+    records = list(records)
+    result = classification_report(records)
+    labels = np.asarray([row["label"] for row in records])
+    margins = np.asarray([row["margin"] for row in records], dtype=np.float64)
+    probability = probabilities(margins)
+    confidence = probabilities(np.abs(margins))
+    correct = (margins >= 0) == labels
+    high_count = result["high_confidence_count"]
+    correlation = None
+    if np.ptp(confidence) > 0 and correct.any() and (~correct).any():
+        correlation = float(np.corrcoef(confidence, correct.astype(float))[0, 1])
+    result.update({
+        "brier": float(np.mean((probability - labels) ** 2)),
+        "mean_confidence": float(confidence.mean()),
+        "mean_confidence_correct": float(confidence[correct].mean()) if correct.any() else None,
+        "high_confidence_error_rate": result["high_confidence_errors"] / high_count if high_count else None,
+        "error_detection_auroc": auroc((~correct).astype(int), -np.abs(margins)),
+        "confidence_correctness_correlation": correlation,
+    })
+    return result
+
+
+def reliability_report(records, n_bins=5):
+    """Add equal-width bins on [0.5,1] and sample-weighted ECE to raw metrics.
+
+    Input records contain label and margin. Each output bin has count, mean
+    confidence and accuracy; empty means are None, and the final bin includes 1.
+    """
+    if n_bins < 1:
+        raise ValueError("Use at least one confidence bin")
+    records = list(records)
+    result = confidence_report(records)
+    margins = np.asarray([row["margin"] for row in records], dtype=np.float64)
+    labels = np.asarray([row["label"] for row in records])
+    confidence = probabilities(np.abs(margins))
+    correct = (margins >= 0) == labels
+    edges = np.linspace(0.5, 1.0, n_bins + 1)
+    bins, ece = [], 0.0
+    for index, (lower, upper) in enumerate(zip(edges[:-1], edges[1:])):
+        inside = (confidence >= lower) & (confidence <= upper if index == n_bins - 1 else confidence < upper)
+        count = int(inside.sum())
+        accuracy = float(correct[inside].mean()) if count else None
+        mean_confidence = float(confidence[inside].mean()) if count else None
+        if count:
+            ece += count / len(records) * abs(accuracy - mean_confidence)
+        bins.append({"lower": float(lower), "upper": float(upper), "count": count,
+                     "accuracy": accuracy, "confidence": mean_confidence})
+    result.update(ece=float(ece), reliability_bins=bins)
+    return result
+
+
+def plot_reliability(report, output, title="Slice confidence reliability"):
+    """Plot existing bin statistics and slice counts without rerunning inference."""
+    import matplotlib.pyplot as plt
+
+    bins = report["reliability_bins"]
+    populated = [entry for entry in bins if entry["count"]]
+    fig, (ax, counts_ax) = plt.subplots(
+        2, 1, figsize=(6.4, 6.2), sharex=True,
+        gridspec_kw={"height_ratios": [3, 1]}, layout="constrained",
+    )
+    ax.plot([0.5, 1], [0.5, 1], "--", color="0.5", label="Ideal calibration")
+    ax.plot([entry["confidence"] for entry in populated],
+            [entry["accuracy"] for entry in populated],
+            "o-", color="#2563EB", label="Observed accuracy")
+    ax.set(title=f"{title}\nECE = {report['ece']:.3f} | n = {report['n']:,}",
+           ylabel="Fraction correct", ylim=(0, 1.03), xlim=(0.49, 1.01))
+    ax.grid(alpha=0.2)
+    ax.legend(loc="best")
+    counts_ax.bar([(entry["lower"] + entry["upper"]) / 2 for entry in bins],
+                  [entry["count"] for entry in bins],
+                  width=[0.9 * (entry["upper"] - entry["lower"]) for entry in bins],
+                  color="#2563EB")
+    counts_ax.set(xlabel="Predicted confidence", ylabel="Slices")
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=180)
+    plt.close(fig)
+    return str(output)
+
+
+def hierarchy_report(rows, records):
+    """Report raw slices, conventional scans, patients and weighted scans."""
+    grouped=scan_summary(rows,records)
+    scans=grouped['scans']
+    patients=defaultdict(list)
+    for row in scans: patients[row['subject_id']].append(row)
+    subjects=[dict(label=v[0]['label'],probability_ad=math.fsum(r['probability_ad'] for r in v)/len(v))
+              for _,v in sorted(patients.items())]
+    def summarize(values):
+        return weighted_probability_metrics([r['label'] for r in values],[r['probability_ad'] for r in values])
+    return dict(slice=reliability_report(records),scan=summarize(scans),subject=summarize(subjects),
+                subject_weighted_scan=grouped['weighted_scan_metrics'])
+
+
 def temperature_scale(probability, temperature):
     """Apply positive temperature to clipped scan logits, without fitting."""
     p=np.clip(np.asarray(probability,dtype=float),1e-7,1-1e-7)
