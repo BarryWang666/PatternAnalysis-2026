@@ -315,3 +315,52 @@ def paired_subject_bootstrap(rows, predictions, policies, replicates=2000, seed=
                     if all(v is not None for v in draws[key]) else None,
                     valid_replicates=sum(v is not None for v in draws[key]),replicates=replicates)
             for key,value in points.items()}
+
+
+def select_failure_cases(rows, predictions, policies):
+    """Five seed-3710 error slots, immediate fallback, distinct patients.
+
+    Raw predictions define errors. Calibrated confidence ranks error cases;
+    both-wrong fallback ranks within-scan GFNet slice-probability SD (ddof=0).
+    """
+    tables={m:scan_summary(rows,recs)['scans'] for m,recs in predictions.items()}
+    paths={m:{r['path']:float(probabilities(r['margin'])) for r in recs} for m,recs in predictions.items()}
+    members=defaultdict(list)
+    for row in rows: members[row['subject_id'],row['scan_id']].append(row['relative_image_path'])
+    cases=[]
+    for i,gf in enumerate(tables['gfnet']):
+        cnn=tables['cnn'][i]
+        p,c,y=gf['probability_ad'],cnn['probability_ad'],gf['label']
+        q=float(temperature_scale([p],policies['gfnet']['temperature'])[0])
+        cq=float(temperature_scale([c],policies['cnn']['temperature'])[0])
+        sd=float(np.std([paths['gfnet'][path] for path in members[gf['subject_id'],gf['scan_id']]],ddof=0))
+        cases.append(dict(subject_id=gf['subject_id'],scan_id=gf['scan_id'],label=y,
+            gfnet_probability=p,cnn_probability=c,gfnet_confidence=max(q,1-q),cnn_confidence=max(cq,1-cq),
+            gfnet_error=(p>=.5)!=y,cnn_error=(c>=.5)!=y,gfnet_slice_sd=sd))
+    slots=[('gfnet_false_negative',lambda c:c['label']==1 and c['gfnet_error']),
+           ('gfnet_false_positive',lambda c:c['label']==0 and c['gfnet_error']),
+           ('gfnet_nearest_boundary_error',lambda c:c['gfnet_error']),
+           ('gfnet_wrong_cnn_correct',lambda c:c['gfnet_error'] and not c['cnn_error']),
+           ('cnn_wrong_gfnet_correct',lambda c:c['cnn_error'] and not c['gfnet_error'])]
+    result=[];used=set()
+    for name,matches in slots:
+        available=[c for c in cases if c['subject_id'] not in used]
+        candidates=[c for c in available if matches(c)]
+        fallback=not candidates
+        both_wrong=False
+        if fallback:
+            errors=[c for c in available if c['gfnet_error'] or c['cnn_error']]
+            candidates=[c for c in errors if c['gfnet_error'] and c['cnn_error']]
+            both_wrong=bool(candidates)
+            if not candidates: candidates=errors
+        def rank(c):
+            if fallback:
+                score=-c['gfnet_slice_sd'] if both_wrong else -c['gfnet_confidence' if c['gfnet_error'] else 'cnn_confidence']
+            elif name=='gfnet_nearest_boundary_error': score=abs(c['gfnet_probability']-.5)
+            elif name=='cnn_wrong_gfnet_correct': score=-c['cnn_confidence']
+            else: score=-c['gfnet_confidence']
+            return score,c['subject_id'],c['scan_id']
+        chosen=min(candidates,key=rank) if candidates else None
+        if chosen: used.add(chosen['subject_id'])
+        result.append(dict(slot=name,fallback=fallback,case=chosen))
+    return result

@@ -311,6 +311,20 @@ replicates invalidate incomplete intervals rather than becoming zeros. These
 intervals are conditional on fitted models, calibration and this cohort; they
 do not include all retraining uncertainty or external-population shift.
 
+### Predeclare deterministic failure cases rather than choosing flattering examples
+
+Five sequential seed-3710 slots request GFNet false negatives, false positives,
+a near-boundary error, GFNet-wrong/CNN-correct, and the reverse disagreement.
+Once a patient is selected, all their visits are excluded from later slots.
+Exact score ties use patient and scan IDs; an unavailable category triggers
+its fallback immediately rather than being silently replaced later.
+
+The both-wrong fallback ranks GFNet's within-scan slice-probability population
+SD. Other error fallbacks rank the incorrect model's calibrated confidence.
+Raw decisions define errors; rounded calibrated decisions do not rewrite them.
+This rule makes examples reproducible, but model uncertainty does not establish
+that a case is medically ambiguous without clinical annotation.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
