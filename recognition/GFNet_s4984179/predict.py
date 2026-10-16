@@ -58,6 +58,51 @@ def profile_scan(model, images):
                 peak_allocated_bytes=torch.cuda.max_memory_allocated(images.device))
 
 
+def load_selected_model(checkpoint, device="cpu"):
+    """Load best.pt on device and return (evaluation model, checkpoint metadata).
+
+    The configuration chooses CNN/GFNet; training optimizer and RNG are not
+    restored. latest.pt is reserved for resume and is rejected here.
+    """
+    saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    if saved.get("format") != "sampled-best-v1":
+        raise ValueError("Use the selected best.pt checkpoint, not latest.pt")
+    model = build_model(saved["identity"]["config"]["model"])
+    model.load_state_dict(saved["model"])
+    model.to(device).eval()
+    metadata = {key: value for key, value in saved.items() if key != "model"}
+    return model, metadata
+
+
+def predict_slices(model, loader, device="cpu"):
+    """Return one record per loader image, including the final partial batch.
+
+    Records contain path, subject ID, label, class, margin, AD probability and
+    confidence. Evaluation/inference mode prevents parameter or gradient updates.
+    """
+    model.to(device).eval()
+    records = []
+    with torch.inference_mode():
+        for batch in loader:
+            logits = model(batch["image"].to(device))
+            if not torch.isfinite(logits).all():
+                raise FloatingPointError("Nonfinite prediction logits")
+            margins = (logits[:, 1] - logits[:, 0]).cpu().tolist()
+            for path, subject, label, margin, probability, confidence in zip(
+                batch["path"], batch["subject_id"], batch["label"].tolist(),
+                margins, probabilities(margins), probabilities(np.abs(margins)),
+            ):
+                records.append({
+                    "path": path, "subject_id": subject, "label": int(label),
+                    "prediction": int(margin >= 0), "margin": margin,
+                    "probability_ad": float(probability),
+                    "confidence": float(confidence),
+                })
+    if not records or len(records) != len(loader.dataset):
+        raise ValueError("Prediction must cover every slice")
+    return records
+
+
 def auroc(labels, scores):
     """Binary AUROC with average ranks for tied AD scores."""
     labels, scores = np.asarray(labels), np.asarray(scores)
@@ -190,6 +235,32 @@ def plot_reliability(report, output, title="Slice confidence reliability"):
     fig.savefig(output, dpi=180)
     plt.close(fig)
     return str(output)
+
+
+def infer(checkpoint, manifest, data_root, partition, batch_size=64, *,
+          device="cpu", output=None):
+    """Predict TUNE/CALIBRATION slices; TEST requires its later fixed-policy path."""
+    if partition not in ("tune", "calibration"):
+        raise ValueError("Use tune or calibration; final TEST evaluation is not enabled here")
+    rows = read_manifest(manifest)
+    model, metadata = load_selected_model(checkpoint, device)
+    manifest_sha256 = file_digest(manifest)
+    if metadata["identity"]["manifest_sha256"] != manifest_sha256:
+        raise ValueError("Checkpoint and prediction manifest must match")
+    config = metadata["identity"]["config"]
+    data = ADNISlices(rows, data_root, partition)
+    result = {
+        "format": "slice-predictions-v1", "partition": partition,
+        "model": config["model"], "seed": config["seed"],
+        "checkpoint_epoch": metadata["epoch"],
+        "checkpoint_sha256": file_digest(checkpoint), "manifest_sha256": manifest_sha256,
+        "records": predict_slices(model, make_loader(data, batch_size, config["seed"]), device),
+    }
+    result["metrics"] = reliability_report(result["records"])
+    if output is not None:
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        write_json(output, result)
+    return result
 
 
 def hierarchy_report(rows, records):

@@ -338,6 +338,20 @@ Subjects can appear in several preparation groups, so group counts are not
 additive independent cohorts. Neither a subgroup difference nor its disappearance
 proves that scanner/preparation confounding has been removed.
 
+### Load selected weights and materialize complete slice predictions
+
+Inference loads the selected best model, not the latest training boundary,
+and never applies optimizer or training RNG state. Evaluation/inference mode
+disables DropPath and gradients. The final partial batch remains included.
+Each output record contains one slice path, label, patient metadata, AD margin,
+probability, predicted class and raw confidence.
+
+Saving these records allows metrics, figures and statistical analysis to
+reuse the same model outputs without another image read or forward pass.
+Margins preserve ranking when probabilities saturate near zero or one.
+The prediction API initially accepts TUNE and CALIBRATION; an ordinary prediction
+flag does not automatically authorize a later final TEST evaluation.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
