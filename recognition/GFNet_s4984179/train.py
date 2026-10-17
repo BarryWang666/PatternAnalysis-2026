@@ -95,7 +95,7 @@ def a100_runtime(seed):
     partition = os.environ.get("SLURM_JOB_PARTITION", "").split(",")[0]
     if (not os.environ.get("SLURM_JOB_ID", "").isdigit()
             or os.environ.get("SLURM_JOB_ACCOUNT") != "comp3710"
-            or partition not in ("a100", "comp3710")):
+            or partition not in ("a100", "a100-grind", "a100-test", "comp3710")):
         raise RuntimeError("Run inside a comp3710 allocation on an A100 partition")
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     torch.set_num_threads(2)

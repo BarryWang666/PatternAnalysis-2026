@@ -391,6 +391,18 @@ do not establish genuine checkpoint inference or generalization. Saved real
 results must identify their own data role, model selection and calibration
 history before they support an engineering recommendation.
 
+### Allow the available A100 partitions while checking actual hardware
+
+The usable A100 partitions are a100, a100-grind, a100-test and comp3710.
+The star displayed by sinfo marks the default partition and is not part of
+the name a100-test. Longer fits exclude a100-test's twenty-minute QoS.
+Partition eligibility and current availability are separate scheduling facts.
+
+The runtime retains Slurm's assigned device and verifies an actual A100.
+Allocation names, selected-first partition lists and stored provenance must
+agree. Parser repairs concern operational metadata, not a scientific reason
+to loosen GPU policy or infer a device from a queued scheduling forecast.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
