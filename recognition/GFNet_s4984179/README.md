@@ -417,6 +417,19 @@ not a side effect of reporting. Meaningful functional commits explain these
 boundaries; large generated logs and repeated verification infrastructure do
 not improve the scientific presentation.
 
+### Freeze the initial ten-fit recipe and same-process thread configuration
+
+The first formal recipe fixes native grayscale input, no augmentation, both
+scratch architectures, three LR candidates, AdamW decay 0.01, batch 64,
+patient/scan sampling and weighted scan NLL selection. Winning seed-3710 fits
+are reused before training seeds 3711/3712. A fixed plan limits opportunistic
+changes but cannot rescue an unsuitable statistical objective.
+
+The same process that constructs and trains the model must set two intra-op
+and two inter-op Torch threads. A launcher that merely sets environment variables
+or runs a separate setup process does not guarantee that state. A100 execution
+and epoch segmentation were verified separately from final training accuracy.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

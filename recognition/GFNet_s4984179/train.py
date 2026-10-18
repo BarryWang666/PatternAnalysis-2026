@@ -87,7 +87,7 @@ def seed_everything(seed):
 
 
 def a100_runtime(seed):
-    """Initialize the assigned A100, deterministic FP32, seed and 2/1 threads.
+    """Initialize the assigned A100, deterministic FP32, seed and 2/2 threads.
 
     Return a CUDA device and measured runtime metadata. Call once at entry,
     before model construction or computation; keep Slurm's device assignment.
@@ -99,7 +99,7 @@ def a100_runtime(seed):
         raise RuntimeError("Run inside a comp3710 allocation on an A100 partition")
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     torch.set_num_threads(2)
-    torch.set_num_interop_threads(1)
+    torch.set_num_interop_threads(2)
     torch.use_deterministic_algorithms(True)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
