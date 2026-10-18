@@ -263,6 +263,42 @@ def infer(checkpoint, manifest, data_root, partition, batch_size=64, *,
     return result
 
 
+def main(argv=None):
+    """Run allocated-GPU prediction or report existing records on CPU."""
+    parser = argparse.ArgumentParser(description="ADNI slice prediction and reliability reporting")
+    commands = parser.add_subparsers(dest="command", required=True)
+    prediction = commands.add_parser("predict", help="Predict TUNE/CALIBRATION on an allocated A100")
+    prediction.add_argument("--checkpoint", required=True)
+    prediction.add_argument("--manifest", required=True)
+    prediction.add_argument("--data-root", required=True)
+    prediction.add_argument("--partition", choices=("tune", "calibration"), required=True)
+    prediction.add_argument("--batch-size", type=int, default=64)
+    prediction.add_argument("--seed", type=int, default=3710,
+                            help="Runtime initialization seed; trained model identity comes from checkpoint")
+    prediction.add_argument("--output", required=True)
+    reporting = commands.add_parser("report", help="Analyze saved predictions without rerunning the model")
+    reporting.add_argument("--input", required=True)
+    reporting.add_argument("--output", required=True)
+    reporting.add_argument("--bins", type=int, default=10)
+    reporting.add_argument("--figure", help="Optional reliability diagram PNG/PDF")
+    args = parser.parse_args(argv)
+    if args.command == "predict":
+        device, runtime = a100_runtime(args.seed)
+        result = infer(args.checkpoint, args.manifest, args.data_root, args.partition,
+                       args.batch_size, device=device)
+        result["runtime"] = runtime
+    else:
+        result = json.loads(Path(args.input).read_text(encoding="utf-8"))
+        result["metrics"] = reliability_report(result["records"], args.bins)
+        if args.figure:
+            plot_reliability(result["metrics"], args.figure)
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    write_json(args.output, result)
+    metrics = result["metrics"]
+    print(json.dumps({key: metrics[key] for key in ("n", "correct", "accuracy", "nll", "brier", "ece")}, indent=2))
+    return 0
+
+
 def hierarchy_report(rows, records):
     """Report raw slices, conventional scans, patients and weighted scans."""
     grouped=scan_summary(rows,records)
@@ -451,3 +487,7 @@ def preparation_sensitivity(rows,records,policy):
             raw=hierarchy_report(included,predictions) if included else None,
             calibrated=apply_scan_policy(policy,included,predictions) if included else None)
     return reports
+
+
+if __name__ == '__main__':
+    main()

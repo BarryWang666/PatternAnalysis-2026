@@ -403,6 +403,20 @@ Allocation names, selected-first partition lists and stored provenance must
 agree. Parser repairs concern operational metadata, not a scientific reason
 to loosen GPU policy or infer a device from a queued scheduling forecast.
 
+### Expose prediction and calibration interfaces without a permanent test framework
+
+The compact project is organized around data loading, model definitions,
+training, prediction/analysis and the report. Public functions document input
+shapes, data units and outputs; non-obvious Fourier, weighting and threshold
+operations have local explanations and references. Operational reports and
+model payloads stay outside the source directory.
+
+A direct prediction command saves reusable records, while a report command
+works from existing JSON on CPU. Calibration is a separate explicit operation,
+not a side effect of reporting. Meaningful functional commits explain these
+boundaries; large generated logs and repeated verification infrastructure do
+not improve the scientific presentation.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
