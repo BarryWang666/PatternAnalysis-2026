@@ -430,6 +430,18 @@ and two inter-op Torch threads. A launcher that merely sets environment variable
 or runs a separate setup process does not guarantee that state. A100 execution
 and epoch segmentation were verified separately from final training accuracy.
 
+### Record the first completed CNN fit and its selected boundary
+
+CNN seed 3710 at LR 1e-4 stopped by patience at epoch 41. V1 selected epoch
+29 with weighted scan TUNE NLL 0.2800864185. Cumulative work was 5,248
+updates, 334,560 TRAIN and 117,260 TUNE presentations. These counts describe
+sample consumption, not independently instrumented JPEG decodes.
+
+The fit continued across allocations from saved complete boundaries. It
+establishes one completed development candidate, not an LR winner, a robust
+seed comparison or TEST success. Keeping best and latest separate matters
+because the selected model is earlier than the terminal training boundary.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
