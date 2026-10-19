@@ -442,6 +442,18 @@ establishes one completed development candidate, not an LR winner, a robust
 seed comparison or TEST success. Keeping best and latest separate matters
 because the selected model is earlier than the terminal training boundary.
 
+### Compare a second CNN learning rate before selecting a winner
+
+CNN seed 3710 at LR 3e-4 stopped at epoch 39, selecting epoch 27 with
+weighted scan TUNE NLL 0.2634022764. It executed 4,992 updates, 318,240
+TRAIN and 111,540 TUNE presentations. Its lower selected scan NLL is a
+candidate comparison under V1, not evidence that all slice-level measures improve.
+
+All three peaks and both architectures still need to complete before the
+predeclared barrier can choose additional-seed learning rates. Selecting early
+from two favorable candidates would change the plan and underestimate the
+uncertainty in architecture and optimization choices.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
