@@ -454,6 +454,19 @@ predeclared barrier can choose additional-seed learning rates. Selecting early
 from two favorable candidates would change the plan and underestimate the
 uncertainty in architecture and optimization choices.
 
+### Retain scientific progress while simplifying checkpoint storage
+
+A failed wrapper left the third CNN candidate safely paused at epoch ten;
+the child training had completed but subsequent CPU authentication failed.
+Inspection traced the external failure to conflicting TorchDynamo guard-object
+registration, not an observed nonfinite training update or GPU execution fault.
+
+Repairing authentication preserves the existing fit and distinguishes completed
+learning from postprocessing. Storage constraints also motivate retaining the
+latest resumable and selected-best payloads while keeping compact histories.
+A 40 GB A100 is VRAM, not home-directory disk capacity. Operational cleanup
+must not silently erase the only state required for continuation or inference.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
