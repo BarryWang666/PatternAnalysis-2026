@@ -467,6 +467,19 @@ latest resumable and selected-best payloads while keeping compact histories.
 A 40 GB A100 is VRAM, not home-directory disk capacity. Operational cleanup
 must not silently erase the only state required for continuation or inference.
 
+### Complete ten formal fits and retain three seeds per architecture
+
+All six development and four additional fits completed. The V1 rule selected
+LR 3e-4 for both models; seed 3710's winning fits were reused alongside seeds
+3711 and 3712. CNN additional fits stopped at epochs 54 and 45, selecting
+42 and 33; GFNet's three selected fits all favored epoch one under scan NLL.
+
+This pattern is an early warning: a technically completed workflow is not a
+successful classifier. GFNet's later training can fit TRAIN while its declared
+validation probability metric deteriorates. The completed roster makes later
+comparisons well-defined, but no architecture is declared superior merely
+because all jobs and checkpoint handoffs finished.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
