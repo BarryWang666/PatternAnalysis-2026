@@ -480,6 +480,18 @@ validation probability metric deteriorates. The completed roster makes later
 comparisons well-defined, but no architecture is declared superior merely
 because all jobs and checkpoint handoffs finished.
 
+### Record real TUNE prediction and CALIBRATION execution
+
+Job 685251 completed six selected-model TUNE predictions and six CALIBRATION
+calls, totaling 36,240 presentations: 17,160 TUNE and 19,080 CALIBRATION.
+All saved runtimes used A100-PCIE-40GB on a100-8 with 2/2 threads. Per-call
+elapsed times include authentication and I/O, not just model forwards.
+
+Both seed-3710 integration gates passed before the later calls. Frozen
+calibration references and selected-checkpoint identities reconciled. This
+supports genuine execution of the V1 interfaces, but fitting a scan policy
+still does not establish slice calibration or attainment of slice accuracy.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
