@@ -489,5 +489,24 @@ def preparation_sensitivity(rows,records,policy):
     return reports
 
 
+def infer_released_test(checkpoint,manifest,data_root,release,model_name,seed,device='cpu'):
+    """Use an explicit six-model release roster and previously fixed scan policy."""
+    slot=f'{model_name}-{seed}'
+    entry=release['models'][slot]
+    if len(release['models'])!=6 or file_digest(checkpoint)!=entry['checkpoint_sha256']:
+        raise ValueError('Selected checkpoint does not match the six-model release')
+    if file_digest(manifest)!=release['manifest_sha256']:
+        raise ValueError('Release population changed')
+    model,metadata=load_selected_model(checkpoint,device)
+    config=metadata['identity']['config']
+    if config['model']!=model_name or config['seed']!=seed:
+        raise ValueError('Model/seed differs from released slot')
+    rows=read_manifest(manifest);data=ADNISlices(rows,data_root,'test')
+    records=predict_slices(model,make_loader(data,64,seed),device)
+    return dict(model=model_name,seed=seed,partition='test',records=records,
+                raw=hierarchy_report(data.rows,records),
+                calibrated=apply_scan_policy(entry['policy'],data.rows,records))
+
+
 if __name__ == '__main__':
     main()

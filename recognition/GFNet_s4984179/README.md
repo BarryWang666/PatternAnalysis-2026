@@ -492,6 +492,19 @@ calibration references and selected-checkpoint identities reconciled. This
 supports genuine execution of the V1 interfaces, but fitting a scan policy
 still does not establish slice calibration or attainment of slice accuracy.
 
+### Require an explicit six-model release for the final TEST evaluation
+
+A final TEST call identifies all six selected checkpoints and their already
+fixed calibration policies. It verifies the manifest and model/seed slot before
+construction; ordinary TUNE/CALIBRATION inference remains a separate interface.
+This makes a final evaluation an explicit action rather than a convenient flag
+used during development.
+
+Historical calibration provenance is kept apart from the new inference
+provenance. Repeated analysis reuses saved outputs rather than repeating TEST
+for a more favorable model or seed. Release plumbing controls execution, but
+does not make an inappropriate selection objective scientifically appropriate.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
