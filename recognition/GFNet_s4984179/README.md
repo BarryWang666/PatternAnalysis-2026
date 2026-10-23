@@ -530,6 +530,19 @@ negatives, per seed. V1's fixed scan policies had CNN selective risk about
 These supplementary scan values cannot substitute for assessed slice accuracy.
 The evidence supports neither clinical use nor calling the project complete.
 
+### Diagnose objective mismatch before proposing more training
+
+The sampled TRAIN stream has AD share 32.60%, versus 51.08% across all TRAIN
+slices. Patient-uniform sampling therefore changes class and within-class visit
+weights. V1's weighted scan objective also differs from the task's image
+accuracy. Both can affect decisions without any model implementation bug.
+
+Partial histories support overfitting concerns, but missing trajectories must
+not be invented. A completed CUDA job, falling TRAIN loss and a low aggregated
+NLL do not show that the network classifies individual held-out images well.
+The next diagnostic is to read saved histories, not to assume that more epochs
+or a larger model will fix every failure.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
