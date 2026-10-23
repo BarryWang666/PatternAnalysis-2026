@@ -517,6 +517,19 @@ saved outputs. The next step is to evaluate the declared classification and
 confidence questions. Repeating training, changing a threshold or selecting
 one favorable seed after seeing TEST would answer a different procedure.
 
+### Analyze TEST accuracy together with overconfidence and selective errors
+
+CPU job 688685 analyzed the saved six-model outputs. CNN TEST slice accuracies
+were 82.40%, 79.49% and 81.17% (mean 81.02%); GFNet gave 54.39%, 58.70%
+and 54.75% (mean 55.95%). All six evaluations share the same 136 patients.
+CNN therefore did not consistently exceed 80%, and GFNet failed the target.
+
+CNN still made 515–851 high-confidence slice errors, including 347–558 false
+negatives, per seed. V1's fixed scan policies had CNN selective risk about
+11.33–12.36% versus GFNet 25.38–27.85%, at different observed coverages.
+These supplementary scan values cannot substitute for assessed slice accuracy.
+The evidence supports neither clinical use nor calling the project complete.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
