@@ -543,6 +543,23 @@ NLL do not show that the network classifies individual held-out images well.
 The next diagnostic is to read saved histories, not to assume that more epochs
 or a larger model will fix every failure.
 
+### Use all ten histories to separate fitting from generalization failure
+
+The saved-history inspection covered all ten fits without rerunning inference.
+GFNet learned TRAIN strongly; retrospective best TUNE slice accuracy was only
+62.87–67.94%, while final wrong-prediction confidence reached 95.8–97.4%.
+This supports a held-out generalization/overconfidence failure, not an untrained
+network, a universal single-class state or demonstrated FFT-axis defect.
+
+CNN seed 3711 illustrates selection mismatch: V1 chose epoch 42 with 80.70%
+slice accuracy and 288 high-confidence false negatives; retrospective epoch
+33 had 82.24% and 146. That is a TUNE diagnosis, not a changed old selection
+or a claimed TEST improvement. The run already reached a low-LR phase, so
+simply calling for longer training is weakly supported.
+
+![V1 GFNet trajectories](figures/v1_gfnet_histories.png)
+![V1 CNN trajectories](figures/v1_cnn_histories.png)
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
