@@ -505,6 +505,18 @@ provenance. Repeated analysis reuses saved outputs rather than repeating TEST
 for a more favorable model or seed. Release plumbing controls execution, but
 does not make an inappropriate selection objective scientifically appropriate.
 
+### Record the first six-model TEST inference without calling it success
+
+Job 687977 completed six calls of 5,920 TEST slices, totaling 35,520
+presentations. Each used A100-PCIE-40GB on a100-5 with 2/2 threads. The
+saved elapsed times were about 753–779 seconds per call and included
+authentication and I/O; no independently measured decode count was recorded.
+
+Execution success only establishes that the released models produced the
+saved outputs. The next step is to evaluate the declared classification and
+confidence questions. Repeating training, changing a threshold or selecting
+one favorable seed after seeing TEST would answer a different procedure.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
