@@ -560,6 +560,19 @@ simply calling for longer training is weakly supported.
 ![V1 GFNet trajectories](figures/v1_gfnet_histories.png)
 ![V1 CNN trajectories](figures/v1_cnn_histories.png)
 
+### Reject a narrower GFNet screen as an insufficient solution
+
+A controlled width-128 GFNet screen completed fifteen sampled blocks, 1,920
+updates, 122,400 TRAIN and 42,900 TUNE presentations. Its highest TUNE slice
+accuracy was 63.99% at block three; its minimum NLL was 0.6894 at block two
+with 62.10% accuracy. No single checkpoint met its capability/continuation gate.
+
+Reducing width alone therefore did not solve the problem under that recipe.
+The checkpoints' best accuracy and best NLL cannot be combined into a fictional
+model. A CNN weight-decay probe was submitted separately; no result is invented
+here. The evidence favors correcting the task alignment and designing controlled
+new experiments rather than extending a failed configuration by default.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
