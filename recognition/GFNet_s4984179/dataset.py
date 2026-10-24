@@ -59,14 +59,22 @@ class ADNISlices(Dataset):
     """Load one declared partition from manifest rows under data_root.
 
     Each item contains image [1,240,256], integer label, path and subject_id.
-    Native grayscale pixels are scaled to [0,1], without resizing or cropping.
+    Native grayscale pixels use [0,1] or [-1,1], without resizing or cropping.
+    Optional TRAIN augmentation rotates up to 5 degrees and translates up to
+    2% of each axis, using bilinear sampling and black background fill.
     Paths and patient IDs are metadata only; neither is a model input.
     """
 
-    def __init__(self, rows, data_root, partition):
+    def __init__(self, rows, data_root, partition, *, input_scale="zero_one", augment=False):
+        if input_scale not in ("zero_one", "minus_one_one"):
+            raise ValueError("Choose zero_one or minus_one_one input scaling")
+        if augment and partition != "train":
+            raise ValueError("Geometric augmentation is TRAIN-only")
         self.rows = select_partition(rows, partition)
         self.root = Path(data_root).resolve()
         self.partition = partition
+        self.input_scale = input_scale
+        self.augment = augment
 
     def __len__(self):
         return len(self.rows)
@@ -79,7 +87,16 @@ class ADNISlices(Dataset):
         with Image.open(path) as image:
             if image.format != "JPEG" or image.mode != "L" or image.size != (256, 240):
                 raise ValueError(f"Expected grayscale 256x240 JPEG: {path}")
+            if self.augment:
+                angle, dx, dy = (torch.rand(3).tolist())
+                image = image.rotate(
+                    (2 * angle - 1) * 5, resample=Image.Resampling.BILINEAR,
+                    translate=((2 * dx - 1) * 0.02 * 256, (2 * dy - 1) * 0.02 * 240),
+                    fillcolor=0,
+                )
             pixels = np.array(image, dtype=np.float32) / 255.0
+        if self.input_scale == "minus_one_one":
+            pixels = 2 * pixels - 1
         return {
             "image": torch.from_numpy(pixels[None]),
             "label": int(row["label"]),

@@ -945,6 +945,23 @@ sensitivity limits generalization. The baseline is retained rather than
 quietly replaced. Any promising recipe still requires additional seeds and
 final image-level evaluation; a single favorable TUNE score is not completion.
 
+### Add controlled centering and mild TRAIN geometry experiments
+
+Reference-code comparison found no obvious missing residual or incorrect FFT
+axes in the current plain GFNet. It also found meaningful recipe differences:
+the reference uses stronger decay and different input processing. Its nominal
+LR is scaled by global batch/512, so copying a displayed LR without that step
+would not reproduce the optimization setting. Peer reports use different
+splits, preprocessing and sometimes scan aggregation; their reported 80%
+is not evidence of 80% under this slice protocol.
+
+V2 adds a fixed [-1,1] option as `2*x-1` and a separate mild TRAIN transform:
+rotation within ±5° and translation within ±2% per axis, bilinear interpolation
+and black fill. Each option is a hypothesis; neither is called a missing
+mandatory preprocessing step. The default [0,1] loader remains the baseline.
+Four TRAIN previews at transform limits showed no obvious brain clipping in
+those examples, which is not a population-wide diagnostic guarantee.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
