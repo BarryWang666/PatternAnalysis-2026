@@ -674,6 +674,28 @@ accuracy, scan votes or a caller assertion of grading success. These metrics
 support interpretation of a trained model; their availability does not prove
 that the target has been met.
 
+### Use slice confidence diagnostics and ten explicit reliability bins
+
+V2 evaluates raw slice confidence against actual image correctness. Brier,
+NLL, confidence on mistakes and high-confidence false negatives expose
+failures that higher accuracy can conceal. Uncertainty-based error detection
+uses negative absolute margin; it does not change the classification threshold.
+
+Reliability uses ten equal-width bins from 0.5 to 1, with sample-weighted ECE
+and explicit empty-bin support. This differs from the legacy V1 binning, so
+ECE values from the two reporting recipes must not be treated as directly
+identical measures. Neither raw confidence nor a smaller ECE establishes
+clinical reliability or an accuracy improvement.
+
+`reliability_report` uses ten equal-width confidence bins on `[0.5,1]`; lower
+edges are included, and the final bin includes 1. Empty means are null. ECE is
+the sum of `(bin_count / N) * abs(bin_accuracy - bin_mean_confidence)`.
+Sample weights prevent sparse bins from receiving equal influence to common
+ranges. `plot_reliability` draws the observed reliability and bin support from
+saved statistics, without another inference run. ECE depends on bin choice,
+so it accompanies NLL/Brier rather than replacing them. See
+[Guo et al., On Calibration of Modern Neural Networks](https://proceedings.mlr.press/v70/guo17a.html).
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

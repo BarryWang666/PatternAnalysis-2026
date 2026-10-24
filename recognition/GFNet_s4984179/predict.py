@@ -135,7 +135,7 @@ def confidence_report(records):
     return result
 
 
-def reliability_report(records, n_bins=5):
+def reliability_report(records, n_bins=10):
     """Add equal-width bins on [0.5,1] and sample-weighted ECE to raw metrics.
 
     Input records contain label and margin. Each output bin has count, mean
