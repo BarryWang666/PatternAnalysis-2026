@@ -696,6 +696,23 @@ saved statistics, without another inference run. ECE depends on bin choice,
 so it accompanies NLL/Brier rather than replacing them. See
 [Guo et al., On Calibration of Modern Neural Networks](https://proceedings.mlr.press/v70/guo17a.html).
 
+### Record native A100 replay and batch-64 feasibility for V2
+
+The 24 October full-slice implementation check used two continuous updates and
+a separate one-plus-one resumed arm for each model on A100-PCIE-40GB, FP32 and
+2/2 threads. Eight updates consumed 512 TRAIN and 512 TUNE presentations.
+Both comparisons matched exactly. These are small implementation checks,
+not accuracy estimates or a new experiment performed to write this report.
+
+| Model | Peak allocated GiB | Peak reserved GiB | Allocated / initially free |
+|---|---:|---:|---:|
+| CNN | 8.697 | 13.891 | 22.25% |
+| GFNet | 2.593 | 2.834 | 6.89% |
+
+These measurements support batch 64 under the tested runtime. Allocator
+reservation differs from live tensor allocation. Neither establishes inference
+latency, clinical reliability or that every configuration will fit.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
