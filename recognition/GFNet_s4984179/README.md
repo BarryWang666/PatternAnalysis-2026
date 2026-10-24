@@ -661,6 +661,19 @@ or CALIBRATION, checks manifest identity and can save these records as JSON.
 Plots and metrics can then reuse predictions without reading images again.
 Final TEST execution is not enabled by this interface.
 
+### Evaluate class balance and full-coverage slice performance
+
+Accuracy alone can conceal a model that preferentially predicts NC. V2 retains
+per-class precision/recall/F1, macro-F1, AD AUROC, a confusion matrix and stable
+logit-based NLL. The denominator always includes the complete supplied slice
+population, including difficult images and the last short batch.
+
+Undefined class ratios remain null. The 80% target is checked from correct
+and total image counts, not rounded display percentages, rejected-subset
+accuracy, scan votes or a caller assertion of grading success. These metrics
+support interpretation of a trained model; their availability does not prove
+that the target has been met.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
