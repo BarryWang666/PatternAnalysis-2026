@@ -977,6 +977,27 @@ Local and Rangpur focused checks each passed ten cases, including full slice
 coverage and exact continuous-versus-resumed synthetic learning with augmentation.
 Those implementation checks are not new real-data accuracy findings.
 
+### Submit four independent A100 optimization fits
+
+All four jobs were submitted once on 25 October. They are independent,
+allowing the scheduler to use whichever authorized A100 allocation becomes
+available. Each requests one GPU, two CPUs and two hours, excluding the
+twenty-minute a100-test partition.
+
+| Experiment | Job | Change | Saved 09:21 Brisbane observation |
+| --- | --- | --- | --- |
+| GFNet-A | 695012 | [0,1] → [-1,1] | Running, A100 on a100-5 |
+| GFNet-B | 695013 | decay 0.01 → 0.05 | Running, A100 on a100-8 |
+| GFNet-C | 695014 | TRAIN geometry only | Pending |
+| CNN-A | 695015 | decay 0.01 → 0.05 | Pending |
+
+Selection still uses complete TUNE slice accuracy, then ordinary NLL for
+exact ties. Class recalls and confident errors accompany the result. These
+are historical launch observations; later work may advance independently.
+No performance gain or completed epoch count is established by submission.
+Promising individual changes should be confirmed before combining them, and
+three-seed stability remains required before claiming a robust recipe.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
