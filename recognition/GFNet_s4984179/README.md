@@ -922,6 +922,29 @@ diagnosis labels do not prove every slice visibly contains disease evidence.
 No completed calibration, rejection study, final TEST result or clinical
 recommendation is asserted by the availability of these commands.
 
+### Compare the completed full-slice CNN and GFNet development fits
+
+All four seed-3710 development jobs completed with exit 0 and accuracy patience.
+They share full-slice sampling and the same patient-disjoint TUNE population;
+these are V2 development results, not TEST results or multi-seed stability.
+
+| Model / peak LR | Job | Terminal / selected epoch | Correct / 2,860 | TUNE accuracy | TUNE NLL | HC errors / FNs |
+| --- | --- | --- | --- | --- | --- | --- |
+| gfnet-3710-lr3e-4 | 693083 | 20 / 2 | 1863 / 2,860 | 65.14% | 0.9195 | 424 / 178 |
+| cnn-3710-lr3e-4 | 693387 | 22 / 14 | 2414 / 2,860 | 84.41% | 0.5368 | 245 / 154 |
+| gfnet-3710-lr1e-4 | 693388 | 27 / 19 | 1910 / 2,860 | 66.78% | 2.7912 | 892 / 372 |
+| cnn-3710-lr1e-4 | 693389 | 22 / 14 | 2337 / 2,860 | 81.71% | 0.4581 | 175 / 113 |
+
+CNN's LR-3e-4 candidate has the highest TUNE accuracy, while LR 1e-4 has
+better NLL and fewer confident errors. GFNet's lower LR gains only 47 correct
+images while worsening NLL and high-confidence errors. Thus neither changing
+LR nor perfect TRAIN fitting establishes a reliable GFNet classifier.
+
+The next question is whether input scale, regularization or positional
+sensitivity limits generalization. The baseline is retained rather than
+quietly replaced. Any promising recipe still requires additional seeds and
+final image-level evaluation; a single favorable TUNE score is not completion.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
