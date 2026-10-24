@@ -738,6 +738,152 @@ prove that every longer or different recipe would fail. Recorded epoch loops
 totalled 12.78 minutes including loading/metrics, excluding checkpoint saves
 and queue time; this is not pure inference latency.
 
+### Explain the active code interfaces and implemented mathematical choices
+
+The current submission uses five source/report files. `dataset.py` loads the
+manifest and images; `modules.py` defines CNN and GFNet; `train.py` owns the
+fit and boundary state; `predict.py` owns selected inference and saved-output
+analysis; this README explains decisions and evidence. Images, models, raw
+outputs and temporary verification scripts stay outside the source tree.
+
+The code headers identify purpose and inputs/outputs. Public functions state
+shape and unit contracts; comments explain the rectangular FFT, optimizer
+groups, sample-weighted losses and schedule cursor rather than narrating every
+Python statement. Related papers/implementations are cited next to their use.
+This addresses the recurring presentation feedback: readable working principles,
+concrete commits, interpretable diagrams and honest measured outcomes matter
+more than a large test or defensive-programming framework.
+
+#### Manifest loading
+
+`dataset.py` reads the existing CSV and selects TRAIN, TUNE, CALIBRATION or TEST.
+NC is 0 and AD is 1; the original AD metadata code 2 maps to classifier index 1.
+Rows retain patient IDs and relative paths. Duplicate images, conflicting
+patient partitions and invalid labels are rejected before image loading.
+These direct checks prevent a data error from being interpreted as a learning
+failure. The split is reused rather than regenerated for every experiment.
+The former metadata-audit test entry point is removed; it is not a prediction
+driver or a required part of the compact implementation.
+
+#### Native image geometry
+
+The loader returns float32 images `[1,240,256]`, labels, paths and patient IDs.
+Source JPEGs are grayscale with PIL width/height `(256,240)`. Dividing by 255
+scales the encoded pixels to `[0,1]`; no fitted statistics or RGB replication
+are needed. Preserving geometry avoids stretching a rectangular brain image
+to a square and keeps interpolation out of the initial model comparison.
+Unexpected image geometry is reported instead of silently transformed.
+
+This is a controlled starting point, not evidence that normalization or
+augmentation cannot help. JPEG intensities are not quantitative MRI values.
+The native dimensions also determine the GFNet patch grid introduced below.
+
+#### Sampling: match the assessed slice population
+
+`make_loader` shuffles every TRAIN slice once per epoch, without replacement.
+A private generator uses `seed + epoch`, separating data order from model RNG.
+Other partitions keep their order; all loaders retain the final partial batch.
+At batch 64, 18,560 TRAIN slices require 290 updates, with 64 slices in the last
+batch. TUNE's 2,860 slices require 45 batches, with 44 slices in its final batch.
+
+A saved patient/visit-sampling diagnosis found that AD's share of presented
+TRAIN examples changed from the full-slice 51.08% to approximately 32.60%.
+Uniform patient sampling was intended to reduce repeated-visit influence,
+but it changed class and visit weights relative to image-level assessment.
+The current loader therefore uses equal slice weights. This observation
+motivates the population choice; it does not prove that sampling alone caused
+the earlier performance deficit. Full epochs here are not comparable in work
+to the earlier 8,160-presentation training blocks.
+
+![Partition counts and preparation composition](figures/data_design.png)
+
+Preparation ranges differ in class composition. Patient separation addresses
+identity overlap, but does not establish that models learn disease anatomy
+rather than visual preparation cues. No scan-level classification is needed
+to recognize this confounding limitation.
+
+#### GFNet patch geometry
+
+`PatchEmbed` uses a one-channel convolution with kernel and stride 16. Both
+native dimensions divide exactly: 240/16=15 and 256/16=16. The output is a
+15×16 grid, flattened in row-major order to `[B,240,256]` tokens. Carrying the
+explicit grid prevents an inherited square-input assumption from reshaping
+rectangular features incorrectly.
+
+Patch size 8 would give 30×32=960 tokens, four times as many at a fixed width;
+patch size 16 gives 240. A no-padding size-32 projection would not cover the
+entire height. Size 16 is thus a geometry/resource compromise, not a proven
+accuracy optimum. We retain grayscale and native aspect ratio rather than
+copying RGB/square preprocessing from a reference implementation.
+
+#### GFNet block: normalization, residual path and regularization
+
+The block follows `x + DropPath(MLP(norm2(filter(norm1(x)))))`: one residual
+connection encloses the filtering/MLP branch. The MLP expands feature width
+fourfold, applies GELU, then projects back. The residual preserves a direct
+signal path while LayerNorm controls feature scales. Adding a second,
+Transformer-style residual would change this reference architecture.
+
+DropPath samples one branch gate per example during training and rescales
+survivors by their keep probability. Evaluation disables the gate. Its purpose
+is regularization, not a claim that uncertainty estimates follow from a
+single deterministic prediction. The implementation follows the
+[timm stochastic-depth operation](https://github.com/huggingface/pytorch-image-models).
+
+#### Optimization settings and reproducibility
+
+`train.py` combines explicit configuration, model construction, random seeds,
+AdamW and complete-slice learning with epoch boundaries. A configuration
+records model/LR, seed 3710, decay 0.01 and batch 64, together with the declared
+epoch horizon and stopping settings. A model is built from scratch after
+seeding Python, NumPy and Torch. Repeated seeds measure variation later; a
+fixed seed alone is not evidence of stable performance.
+
+AdamW uses betas `(0.9,0.999)`. Weight matrices receive decay; biases,
+normalization vectors and positional embeddings do not. Decoupling decay
+from adaptive gradient scaling makes its regularization role explicit.
+The decay 0.01 is a starting strength, not an experimentally established best.
+The optimizer grouping covers each trainable parameter exactly once.
+
+Saved histories showed falling TRAIN loss alongside worsening held-out NLL
+and confident errors, especially for GFNet. That motivates checking
+generalization and regularization rather than assuming that another optimizer
+step or a wider model must improve accuracy. It does not identify a single
+cause or prove that the current optimizer is optimal.
+
+Reference: [Loshchilov and Hutter, Decoupled Weight Decay Regularization](https://arxiv.org/abs/1711.05101).
+
+#### Checkpoint selection matches the assessment unit
+
+Select the largest number of correct TUNE slices; break an exact accuracy tie
+with lower slice NLL, then keep the earlier epoch. NLL-only tie improvements
+can select weights but do not reset accuracy patience. Stop after at least
+20 epochs when eight epochs give no strict accuracy improvement, or at the
+30-epoch ceiling. These are declared starting limits, not optimality claims.
+Aggregated scan/subject NLL and filtered-subset accuracy are excluded from
+selection. Probability quality remains a central research outcome even when
+it conflicts with this accuracy-first selection rule.
+
+#### Compact training boundaries
+
+A fresh `fit` saves `latest.pt` and `best.pt`, plus configuration, history and
+a small result summary. Latest includes optimizer/progress/RNG and the selected
+best state; best exports the selected model for later inference. Temporary-file
+replacement avoids publishing a partially written file. Keeping all epoch
+payloads had unnecessary storage cost; a 40 GB GPU does not provide 40 GB of
+home-directory storage. Source and manifest identities associate weights with
+their recipe without introducing a receipt or orchestration framework.
+
+#### Resume the same experiment
+
+Resume reads latest and restores model, AdamW, Python/NumPy/Torch/CUDA RNG,
+complete epoch, selected-best state and patience. Recreating the next loader
+with the saved epoch preserves its shuffle seed; the LR cursor also continues.
+`--epochs N` limits additional complete epochs in one invocation without
+changing the global `--max-epochs` horizon. This is continuation, not another
+fresh initialization. Saved CPU/A100 small-run comparisons support exact replay
+within the tested setup; cross-device bitwise equality is not established.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
