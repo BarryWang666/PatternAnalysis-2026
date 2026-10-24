@@ -884,6 +884,44 @@ changing the global `--max-epochs` horizon. This is continuation, not another
 fresh initialization. Saved CPU/A100 small-run comparisons support exact replay
 within the tested setup; cross-device bitwise equality is not established.
 
+### Document direct training, prediction and saved-report commands
+
+The interfaces follow the data flow: train on TRAIN/TUNE inside an A100
+allocation, load the selected checkpoint for inference, then analyze the saved
+records on CPU. Clear commands and output roles let the reader understand
+what an experiment does without following a separate orchestration framework.
+
+`dataset.py` loads slices, `modules.py` defines models and `train.py` fits them.
+Data, weights and outputs live outside the source directory. Use a fresh empty
+output directory or add `--resume` with the same configuration and manifest.
+Run the command inside an allocated A100 job; it sets the runtime before model
+construction. The measured runtime uses Python 3.11.15, Torch 2.13.0+cu130,
+NumPy 2.4.6 and Pillow 12.3.0.
+
+```bash
+python train.py --model gfnet --lr 0.0003 --seed 3710 \
+  --manifest /path/to/split_manifest.csv \
+  --data-root /home/groups/comp3710/ADNI --output /path/to/run
+```
+
+```bash
+python predict.py predict --checkpoint /path/to/best.pt \
+  --manifest /path/to/split_manifest.csv --data-root /home/groups/comp3710/ADNI \
+  --partition tune --output /path/to/results/tune.json
+
+python predict.py report --input /path/to/results/tune.json \
+  --output /path/to/results/tune-report.json \
+  --figure /path/to/results/tune-reliability.png
+```
+
+Prediction initializes the allocated A100 and 2/2 threads before construction.
+Reporting reads saved JSON on CPU and optionally exports PNG/PDF, without
+model execution. The reported setup uses Matplotlib 3.9.4. Use the same bins
+when comparing reliability. Correlated slices are not independent patients;
+diagnosis labels do not prove every slice visibly contains disease evidence.
+No completed calibration, rejection study, final TEST result or clinical
+recommendation is asserted by the availability of these commands.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
