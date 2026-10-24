@@ -962,6 +962,21 @@ mandatory preprocessing step. The default [0,1] loader remains the baseline.
 Four TRAIN previews at transform limits showed no obvious brain clipping in
 those examples, which is not a population-wide diagnostic guarantee.
 
+### Bind experiment preprocessing to training, resume and prediction
+
+Input scaling and TRAIN augmentation are stored in the fit configuration and
+selected checkpoint. TUNE uses the same deterministic intensity scaling with
+geometry disabled; prediction reads that saved scaling. An older slice
+checkpoint without the new field keeps [0,1]. This prevents evaluating a
+centered-input model with the baseline input by accident.
+
+Exactly one factor changes in each new fit: GFNet-A centers input, GFNet-B
+raises decay 0.01→0.05, GFNet-C adds mild geometry, and CNN-A raises decay.
+All use LR 3e-4, seed 3710, batch 64 and the same 30-epoch schedule/stopping.
+Local and Rangpur focused checks each passed ten cases, including full slice
+coverage and exact continuous-versus-resumed synthetic learning with augmentation.
+Those implementation checks are not new real-data accuracy findings.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

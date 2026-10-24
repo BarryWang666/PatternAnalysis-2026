@@ -205,7 +205,8 @@ def infer(checkpoint, manifest, data_root, partition, batch_size=64, *,
     if metadata["identity"]["manifest_sha256"] != manifest_sha256:
         raise ValueError("Checkpoint and prediction manifest must match")
     config = metadata["identity"]["config"]
-    data = ADNISlices(rows, data_root, partition)
+    data = ADNISlices(rows, data_root, partition,
+                      input_scale=config.get("input_scale", "zero_one"))
     result = {
         "format": "slice-predictions-v1", "partition": partition,
         "model": config["model"], "seed": config["seed"],

@@ -35,6 +35,8 @@ class Config:
     warmup_epochs: int = 2
     min_epochs: int = 20
     patience: int = 8
+    input_scale: str = "zero_one"
+    augment: bool = False
 
     def validate(self):
         if self.model not in ("cnn", "gfnet"):
@@ -43,6 +45,8 @@ class Config:
             raise ValueError("Learning rate must be finite and positive")
         if not math.isfinite(self.weight_decay) or self.weight_decay < 0:
             raise ValueError("Weight decay must be finite and nonnegative")
+        if self.input_scale not in ("zero_one", "minus_one_one"):
+            raise ValueError("Choose zero_one or minus_one_one input scaling")
         if (not 0 <= self.seed < 2**32 or self.batch_size < 1 or self.patience < 1
                 or not 0 <= self.warmup_epochs < self.max_epochs
                 or not 1 <= self.min_epochs <= self.max_epochs):
@@ -392,6 +396,8 @@ def main():
     parser.add_argument("--warmup-epochs", type=int, default=2)
     parser.add_argument("--min-epochs", type=int, default=20)
     parser.add_argument("--patience", type=int, default=8)
+    parser.add_argument("--input-scale", choices=("zero_one", "minus_one_one"), default="zero_one")
+    parser.add_argument("--augment", action="store_true", help="TRAIN-only rotation +/-5 degrees and translation +/-2%%")
     parser.add_argument("--epochs", type=int, help="Additional complete epochs this invocation; keep the global LR horizon")
     parser.add_argument("--resume", action="store_true", help="Continue this output directory's latest.pt")
     args = parser.parse_args()
@@ -401,8 +407,9 @@ def main():
     if output == source or source in output.parents:
         parser.error("Keep run outputs outside the source folder")
     rows = read_manifest(args.manifest)
-    train_data = ADNISlices(rows, args.data_root, "train")
-    tune_data = ADNISlices(rows, args.data_root, "tune")
+    train_data = ADNISlices(rows, args.data_root, "train", input_scale=config.input_scale,
+                            augment=config.augment)
+    tune_data = ADNISlices(rows, args.data_root, "tune", input_scale=config.input_scale)
     device, runtime = a100_runtime(config.seed)
     print(json.dumps({"train_slices": len(train_data), "tune_slices": len(tune_data),
                       "config": asdict(config), "runtime": runtime}), flush=True)
