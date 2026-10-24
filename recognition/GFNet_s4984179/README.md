@@ -713,6 +713,31 @@ These measurements support batch 64 under the tested runtime. Allocator
 reservation differs from live tensor allocation. Neither establishes inference
 latency, clinical reliability or that every configuration will fit.
 
+### Record the first full-slice GFNet result and its remaining failure
+
+Job 693083 trained seed 3710, LR 3e-4, decay 0.01, batch 64 on all 18,560 TRAIN
+slices and evaluated every 2,860 TUNE slices. Accuracy patience stopped at
+epoch 20: 5,800 updates, 371,200 TRAIN and 57,200 TUNE presentations. These
+counts are not independently measured decodes. The saved result is distinct
+from the patient-sampled reference histories above.
+
+| Boundary | Online TRAIN accuracy | TUNE correct/total | TUNE NLL | HC errors / FNs |
+|---|---:|---:|---:|---:|
+| Epoch 1 | 62.76% | 1,684/2,860 (58.88%) | 0.796 | 183 / 1 |
+| Selected epoch 2 | 79.32% | 1,863/2,860 (65.14%) | 0.920 | 424 / 178 |
+| Final epoch 20 | 99.91% | 1,755/2,860 (61.36%) | 3.303 | 1,030 / 455 |
+
+![Full-slice GFNet learning and confidence diagnostics](figures/gfnet_development.png)
+
+NLL was lower at epoch 1, but accuracy-first selection chose epoch 2. Wrong
+prediction confidence rose from 82.13% at selection to 97.84% at the end.
+Learning TRAIN almost perfectly did not produce adequate TUNE discrimination
+or reliable confidence. The 80% target remains unmet; the curve is not TEST
+evidence. The run stopped before the 30-epoch cosine horizon, so it does not
+prove that every longer or different recipe would fail. Recorded epoch loops
+totalled 12.78 minutes including loading/metrics, excluding checkpoint saves
+and queue time; this is not pure inference latency.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
