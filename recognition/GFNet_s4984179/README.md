@@ -639,6 +639,28 @@ cluster resampling may later quantify uncertainty of slice metrics, but it
 must not create patient predictions or silently reintroduce a different
 selection denominator.
 
+### Preserve one reusable prediction record per individual slice
+
+Selected-best loading is retained with the V2 checkpoint identity. Inference
+returns one image record, preserving patient ID only as metadata. A nonnegative
+AD-minus-NC logit margin predicts AD; raw margins remain available when a
+probability rounds near one. This supports classification and confidence
+analysis from a single saved inference pass.
+
+The production inference entry accepts TUNE and CALIBRATION. No V2 TEST
+result follows from having an executable predictor, and final TEST evaluation
+is not enabled by a convenient partition flag. The record schema, complete
+population and fixed model state make later scientific comparison easier to
+read than repeated ad hoc inference commands.
+
+`predict_slices` runs inference mode over every image, including a short last
+batch. Each record contains path, patient ID, label, predicted class, AD logit
+margin, AD probability and raw confidence. Paths/IDs remain metadata. Margins
+preserve ordering when probabilities round near 0 or 1. `infer` accepts TUNE
+or CALIBRATION, checks manifest identity and can save these records as JSON.
+Plots and metrics can then reuse predictions without reading images again.
+Final TEST execution is not enabled by this interface.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
