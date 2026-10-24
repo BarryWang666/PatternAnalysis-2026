@@ -1,15 +1,17 @@
-# GFNet and CNN for confidence-aware ADNI classification
+# GFNet and CNN for confidence-aware ADNI slice classification
 
-COMP3710 · s4984179. This research compares a scratch GFNet with a simple
-convolutional baseline on prepared 2D MRI slices. The development record below
-explains the data, mathematical operations, engineering choices and their
-observed consequences. It distinguishes intended experiments from measurements.
+COMP3710 · s4984179. **V2 develops one slice, one
+prediction, equal-slice training and TUNE accuracy selection.** The numerical
+80% assessment target concerns all TEST slices. Confidence reliability,
+high-confidence mistakes and failure analysis remain central research outcomes.
+No new V2 TEST result is claimed here.
 
-## V1 development: patient sampling and aggregated selection
+The V1 record is retained to explain the choices, measurements and rejected
+assumptions that led to V2. Its scan/patient prediction aggregation is historical
+and is absent from the current production files. The version sections identify
+which data unit and selection rule produced each reported result.
 
-Each network predicts a class for one slice. V1 also constructs scan/patient
-summaries and uses weighted scan NLL for selection; the consequences of that
-additional objective are investigated as evidence becomes available.
+## V1 development: superseded patient sampling and aggregated selection
 
 ### Recover actual patients and audit the supplied image folders
 
@@ -572,6 +574,36 @@ The checkpoints' best accuracy and best NLL cannot be combined into a fictional
 model. A CNN weight-decay probe was submitted separately; no result is invented
 here. The evidence favors correcting the task alignment and designing controlled
 new experiments rather than extending a failed configuration by default.
+
+## V2 development: equal-slice training and selection
+
+### V2.0 Replace the task-misaligned V1 objective and start fresh
+
+The instructor defines accuracy as correctly classified 2D test images divided
+by all test images. A scan or patient decision requires an additional voting
+or probability-aggregation rule and is outside this task. V1's weighted scan
+NLL therefore selects for a different output unit, despite its sound motivation
+to handle repeated visits and examine probability quality.
+
+The saved results show why that distinction matters. Patient-uniform sampling
+changes TRAIN's AD share from 51.08% to 32.60%; aggregated NLL can improve
+while individual-slice accuracy or AD recall worsens. CNN is not stable above
+80% across seeds, and GFNet remains far below it. Additional operational
+validation cannot correct that objective mismatch, so V1 is abandoned as the
+production training/evaluation design.
+
+V2 retains actual patient-disjoint partitions, native geometry and the two
+scratch architectures. It replaces visit sampling with complete-slice epochs,
+selects by complete TUNE slice accuracy with a slice-NLL tie break, and starts
+new fits with fresh weights and optimizer/RNG state. Old results remain labelled
+V1; they neither become V2 measurements nor disappear because code is rewritten.
+Confidence reliability stays a research priority, measured at the same image
+unit alongside classification rather than used to justify a substituted denominator.
+
+The same patient-disjoint manifest is retained. New code and fresh weights do
+not create a new independent cohort: V1 already evaluated its TEST population.
+V2 results must identify this earlier exposure and must not be described as
+a first-ever evaluation of previously unseen study patients.
 
 ## Artificial Intelligence Usage Disclosure
 
