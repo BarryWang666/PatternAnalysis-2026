@@ -619,6 +619,26 @@ is no patient or scan voting, probability averaging or patient-weighted loss.
 Native grayscale scaling remains [0,1] at this starting point, so the sampling
 change is not bundled with resizing, augmentation or pretrained normalization.
 
+### Align the trainer, schedule and selected checkpoints with slice accuracy
+
+The trainer now consumes complete-slice epochs and selects the maximum number
+of correct TUNE images out of the same 2,860 slices. Lower ordinary slice NLL
+breaks exact accuracy ties; a tie-only NLL improvement does not reset accuracy
+patience. The default ceiling is thirty full epochs, two warmup epochs, minimum
+twenty epochs and eight epochs without strict accuracy improvement.
+
+Thirty full epochs permit 556,800 TRAIN presentations, versus V1's 489,600
+at its sixty sampled-epoch ceiling. Epoch counts alone therefore do not compare
+training effort. The global schedule cursor still survives continuation.
+Separate latest/best payloads retain compact reproducible learning state.
+
+The predictor and trainer use the new slice checkpoint format, keeping V1
+weights out of these fresh runs. Legacy aggregation, scan calibration, scan
+rejection and their report composition are removed from production. Patient
+cluster resampling may later quantify uncertainty of slice metrics, but it
+must not create patient predictions or silently reintroduce a different
+selection denominator.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

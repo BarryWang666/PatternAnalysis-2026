@@ -5,10 +5,7 @@ GFNet source: https://github.com/raoyongming/GFNet
 Stochastic depth source: https://github.com/huggingface/pytorch-image-models
 """
 
-
 import torch
-
-
 from torch import nn
 
 

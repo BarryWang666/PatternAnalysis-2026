@@ -5,57 +5,14 @@ Output: per-slice probabilities, classification/confidence metrics and plots.
 Metrics operate on slices; patient IDs are metadata rather than predictions.
 """
 
-
 import argparse
-
-
-from collections import defaultdict
-
-
-from fractions import Fraction
-
-
-import math
-
-
 import json
-
-
 from pathlib import Path
-
-
 import numpy as np
-
-
 import torch
 
-
 from dataset import ADNISlices, make_loader, read_manifest
-
-
-from train import a100_runtime, build_model, file_digest, probabilities, slice_metrics, write_json, scan_summary, weighted_probability_metrics
-
-
-def profile_scan(model, images):
-    """Measure 50 warmups/200 CUDA-event repetitions for a batch of 20 slices.
-
-    Includes forward, softmax and probability mean; excludes decode and transfer.
-    These scan-batch timings are not single-slice or end-to-end latency.
-    """
-    if images.shape != (20,1,240,256) or images.device.type != 'cuda':
-        raise ValueError('Expected an allocated CUDA batch of twenty native slices')
-    model.eval();timings=[]
-    with torch.inference_mode():
-        for _ in range(50): torch.softmax(model(images),dim=1)[:,1].mean()
-        torch.cuda.synchronize(images.device)
-        torch.cuda.reset_peak_memory_stats(images.device)
-        for _ in range(200):
-            start,end=torch.cuda.Event(enable_timing=True),torch.cuda.Event(enable_timing=True)
-            start.record();torch.softmax(model(images),dim=1)[:,1].mean();end.record();end.synchronize()
-            timings.append(start.elapsed_time(end))
-    return dict(timings_ms=timings,median_ms=float(np.median(timings)),
-                p95_ms=float(np.percentile(timings,95,method='linear')),
-                peak_allocated_bytes=torch.cuda.max_memory_allocated(images.device))
+from train import a100_runtime, build_model, file_digest, probabilities, slice_metrics, write_json
 
 
 def load_selected_model(checkpoint, device="cpu"):
@@ -65,7 +22,7 @@ def load_selected_model(checkpoint, device="cpu"):
     restored. latest.pt is reserved for resume and is rejected here.
     """
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    if saved.get("format") != "sampled-best-v1":
+    if saved.get("format") != "slice-best-v1":
         raise ValueError("Use the selected best.pt checkpoint, not latest.pt")
     model = build_model(saved["identity"]["config"]["model"])
     model.load_state_dict(saved["model"])
@@ -299,214 +256,5 @@ def main(argv=None):
     return 0
 
 
-def hierarchy_report(rows, records):
-    """Report raw slices, conventional scans, patients and weighted scans."""
-    grouped=scan_summary(rows,records)
-    scans=grouped['scans']
-    patients=defaultdict(list)
-    for row in scans: patients[row['subject_id']].append(row)
-    subjects=[dict(label=v[0]['label'],probability_ad=math.fsum(r['probability_ad'] for r in v)/len(v))
-              for _,v in sorted(patients.items())]
-    def summarize(values):
-        return weighted_probability_metrics([r['label'] for r in values],[r['probability_ad'] for r in values])
-    return dict(slice=reliability_report(records),scan=summarize(scans),subject=summarize(subjects),
-                subject_weighted_scan=grouped['weighted_scan_metrics'])
-
-
-def temperature_scale(probability, temperature):
-    """Apply positive temperature to clipped scan logits, without fitting."""
-    p=np.clip(np.asarray(probability,dtype=float),1e-7,1-1e-7)
-    if not math.isfinite(temperature) or temperature<=0:
-        raise ValueError('Temperature must be finite and positive')
-    return probabilities(np.log(p/(1-p))/temperature)
-
-
-def selective_metrics(labels, probability, weights, threshold):
-    """Measure fixed-policy acceptance; preserve full-population AD support."""
-    y,p,w=np.asarray(labels),np.asarray(probability),np.asarray(weights,dtype=float)
-    accepted=np.maximum(p,1-p)>=threshold
-    correct=(p>=.5)==y
-    total=math.fsum(w)
-    mass=math.fsum(w[accepted])
-    risk=math.fsum(w[accepted & ~correct])/mass if mass else None
-    ad=math.fsum(w[y==1])
-    return dict(coverage=mass/total,rejected_fraction=math.fsum(w[~accepted])/total,
-        accepted_count=int(accepted.sum()),risk=risk,
-        accepted_false_negatives=int(np.sum(accepted & (y==1) & (p<.5))),
-        accepted_fn_fraction_all_AD=math.fsum(w[accepted & (y==1) & (p<.5)])/ad if ad else None)
-
-
-def fit_scan_policy(rows, records):
-    """Fit scan temperature and a >=80% weighted-coverage threshold on CALIBRATION."""
-    if not rows or any(r['partition']!='calibration' for r in rows):
-        raise ValueError('Fit only the CALIBRATION population')
-    scans=scan_summary(rows,records)['scans']
-    y=[r['label'] for r in scans];p=[r['probability_ad'] for r in scans];w=[r['weight'] for r in scans]
-    temperatures=np.unique(np.r_[np.geomspace(.05,20.,201),1.])
-    candidates=[(weighted_probability_metrics(y,temperature_scale(p,float(t)),w)['nll'],abs(float(t)-1),float(t))
-                for t in temperatures]
-    nll,_,temperature=min(candidates)
-    q=temperature_scale(p,temperature);confidence=np.maximum(q,1-q)
-    exact=[Fraction(1,r['visits']) for r in scans]
-    for threshold in np.unique(confidence)[::-1]:
-        mass=sum((v for v,c in zip(exact,confidence) if c>=threshold),Fraction(0))
-        if mass/sum(exact,Fraction(0))>=Fraction(4,5): break
-    return dict(temperature=temperature,threshold=float(threshold),fit_partition='calibration',
-                target_coverage=.8,nll=nll,slice_count=len(rows),
-                calibration=selective_metrics(y,q,w,float(threshold)))
-
-
-def apply_scan_policy(policy, rows, records):
-    """Apply an already fitted scan policy; evaluation never changes its parameters."""
-    scans=scan_summary(rows,records)['scans']
-    y=[r['label'] for r in scans];w=[r['weight'] for r in scans]
-    p=temperature_scale([r['probability_ad'] for r in scans],policy['temperature'])
-    return dict(metrics=weighted_probability_metrics(y,p,w),
-                selective=selective_metrics(y,p,w,policy['threshold']))
-
-
-def risk_coverage_curve(labels, probability, weights=None):
-    """Return descriptive points admitting whole tied-confidence groups."""
-    y,p=np.asarray(labels),np.asarray(probability)
-    w=np.ones(len(y)) if weights is None else np.asarray(weights)
-    confidence=np.maximum(p,1-p)
-    result=[dict(coverage=0.,risk=None,threshold=None)]
-    for threshold in np.unique(confidence)[::-1]:
-        result.append(dict(threshold=float(threshold),**selective_metrics(y,p,w,float(threshold))))
-    return result
-
-
-def paired_subject_bootstrap(rows, predictions, policies, replicates=2000, seed=9001):
-    """Shared diagnosis-stratified patient draws, preserving visits and multiplicity.
-
-    predictions/policies map (model, training_seed) to saved records/fixed policy.
-    No model training or calibration fitting occurs. Percentile intervals are
-    conditional on the fitted models, policies, cohort and patient partition.
-    """
-    groups=defaultdict(list)
-    for row in rows: groups[row['subject_id']].append(row)
-    strata=[[s for s in sorted(groups) if int(groups[s][0]['label'])==label] for label in (0,1)]
-    if any(not ids for ids in strata): raise ValueError('Both diagnosis strata are required')
-    expected={(m,s) for m in ('cnn','gfnet') for s in (3710,3711,3712)}
-    if set(predictions)!=expected or set(policies)!=expected: raise ValueError('Need the fixed six-model roster')
-    tables={slot:{r['path']:r for r in records} for slot,records in predictions.items()}
-    def point(selected,slot):
-        samples=[];joined=[]
-        for draw_id,subject in enumerate(selected):
-            for row in groups[subject]:
-                path=f"{draw_id}:{row['relative_image_path']}"
-                samples.append(dict(row,relative_image_path=path,subject_id=f'{draw_id}:{subject}'))
-                joined.append(dict(tables[slot][row['relative_image_path']],path=path,subject_id=f'{draw_id}:{subject}'))
-        raw=classification_report(joined)
-        calibrated=apply_scan_policy(policies[slot],samples,joined)
-        return dict(slice_accuracy=raw['accuracy'],slice_nll=raw['nll'],
-                    selective_risk=calibrated['selective']['risk'])
-    def flatten(selected):
-        per={slot:point(selected,slot) for slot in sorted(expected)}
-        values={f'{m}/{s}/{metric}':v for (m,s),metrics in per.items() for metric,v in metrics.items()}
-        for metric in next(iter(per.values())):
-            means={m:float(np.mean([per[m,s][metric] for s in (3710,3711,3712)]))
-                   if all(per[m,s][metric] is not None for s in (3710,3711,3712)) else None for m in ('cnn','gfnet')}
-            values.update({f'{m}/mean/{metric}':v for m,v in means.items()})
-            values[f'gfnet-minus-cnn/mean/{metric}']=means['gfnet']-means['cnn'] if all(v is not None for v in means.values()) else None
-            for s in (3710,3711,3712):
-                a,b=per['gfnet',s][metric],per['cnn',s][metric]
-                values[f'gfnet-minus-cnn/{s}/{metric}']=a-b if a is not None and b is not None else None
-        return values
-    points=flatten(sorted(groups)); draws={k:[] for k in points}
-    rng=np.random.Generator(np.random.PCG64(seed))
-    for _ in range(replicates):
-        selected=[ids[int(i)] for ids in strata for i in rng.integers(len(ids),size=len(ids))]
-        for key,value in flatten(selected).items(): draws[key].append(value)
-    return {key:dict(point=value,interval=np.percentile(draws[key],[2.5,97.5],method='linear').tolist()
-                    if all(v is not None for v in draws[key]) else None,
-                    valid_replicates=sum(v is not None for v in draws[key]),replicates=replicates)
-            for key,value in points.items()}
-
-
-def select_failure_cases(rows, predictions, policies):
-    """Five seed-3710 error slots, immediate fallback, distinct patients.
-
-    Raw predictions define errors. Calibrated confidence ranks error cases;
-    both-wrong fallback ranks within-scan GFNet slice-probability SD (ddof=0).
-    """
-    tables={m:scan_summary(rows,recs)['scans'] for m,recs in predictions.items()}
-    paths={m:{r['path']:float(probabilities(r['margin'])) for r in recs} for m,recs in predictions.items()}
-    members=defaultdict(list)
-    for row in rows: members[row['subject_id'],row['scan_id']].append(row['relative_image_path'])
-    cases=[]
-    for i,gf in enumerate(tables['gfnet']):
-        cnn=tables['cnn'][i]
-        p,c,y=gf['probability_ad'],cnn['probability_ad'],gf['label']
-        q=float(temperature_scale([p],policies['gfnet']['temperature'])[0])
-        cq=float(temperature_scale([c],policies['cnn']['temperature'])[0])
-        sd=float(np.std([paths['gfnet'][path] for path in members[gf['subject_id'],gf['scan_id']]],ddof=0))
-        cases.append(dict(subject_id=gf['subject_id'],scan_id=gf['scan_id'],label=y,
-            gfnet_probability=p,cnn_probability=c,gfnet_confidence=max(q,1-q),cnn_confidence=max(cq,1-cq),
-            gfnet_error=(p>=.5)!=y,cnn_error=(c>=.5)!=y,gfnet_slice_sd=sd))
-    slots=[('gfnet_false_negative',lambda c:c['label']==1 and c['gfnet_error']),
-           ('gfnet_false_positive',lambda c:c['label']==0 and c['gfnet_error']),
-           ('gfnet_nearest_boundary_error',lambda c:c['gfnet_error']),
-           ('gfnet_wrong_cnn_correct',lambda c:c['gfnet_error'] and not c['cnn_error']),
-           ('cnn_wrong_gfnet_correct',lambda c:c['cnn_error'] and not c['gfnet_error'])]
-    result=[];used=set()
-    for name,matches in slots:
-        available=[c for c in cases if c['subject_id'] not in used]
-        candidates=[c for c in available if matches(c)]
-        fallback=not candidates
-        both_wrong=False
-        if fallback:
-            errors=[c for c in available if c['gfnet_error'] or c['cnn_error']]
-            candidates=[c for c in errors if c['gfnet_error'] and c['cnn_error']]
-            both_wrong=bool(candidates)
-            if not candidates: candidates=errors
-        def rank(c):
-            if fallback:
-                score=-c['gfnet_slice_sd'] if both_wrong else -c['gfnet_confidence' if c['gfnet_error'] else 'cnn_confidence']
-            elif name=='gfnet_nearest_boundary_error': score=abs(c['gfnet_probability']-.5)
-            elif name=='cnn_wrong_gfnet_correct': score=-c['cnn_confidence']
-            else: score=-c['gfnet_confidence']
-            return score,c['subject_id'],c['scan_id']
-        chosen=min(candidates,key=rank) if candidates else None
-        if chosen: used.add(chosen['subject_id'])
-        result.append(dict(slot=name,fallback=fallback,case=chosen))
-    return result
-
-
-def preparation_sensitivity(rows,records,policy):
-    """Describe acquisition slice-start strata with unchanged fitted policy."""
-    starts=defaultdict(list)
-    for row in rows: starts[(row['subject_id'],row['scan_id'])].append(int(row['slice_index']))
-    groups={key:min(indices) for key,indices in starts.items()}
-    reports={}
-    for name,allowed in [('full',set(groups.values())),('common_78_88',{78,88})]+[(f'start_{s}',{s}) for s in sorted(set(groups.values()))]:
-        included=[r for r in rows if groups[r['subject_id'],r['scan_id']] in allowed]
-        paths={r['relative_image_path'] for r in included}
-        predictions=[r for r in records if r['path'] in paths]
-        reports[name]=dict(slice_count=len(included),subject_count=len({r['subject_id'] for r in included}),
-            raw=hierarchy_report(included,predictions) if included else None,
-            calibrated=apply_scan_policy(policy,included,predictions) if included else None)
-    return reports
-
-
-def infer_released_test(checkpoint,manifest,data_root,release,model_name,seed,device='cpu'):
-    """Use an explicit six-model release roster and previously fixed scan policy."""
-    slot=f'{model_name}-{seed}'
-    entry=release['models'][slot]
-    if len(release['models'])!=6 or file_digest(checkpoint)!=entry['checkpoint_sha256']:
-        raise ValueError('Selected checkpoint does not match the six-model release')
-    if file_digest(manifest)!=release['manifest_sha256']:
-        raise ValueError('Release population changed')
-    model,metadata=load_selected_model(checkpoint,device)
-    config=metadata['identity']['config']
-    if config['model']!=model_name or config['seed']!=seed:
-        raise ValueError('Model/seed differs from released slot')
-    rows=read_manifest(manifest);data=ADNISlices(rows,data_root,'test')
-    records=predict_slices(model,make_loader(data,64,seed),device)
-    return dict(model=model_name,seed=seed,partition='test',records=records,
-                raw=hierarchy_report(data.rows,records),
-                calibrated=apply_scan_policy(entry['policy'],data.rows,records))
-
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())

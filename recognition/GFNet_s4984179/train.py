@@ -1,56 +1,26 @@
-"""COMP3710 | s4984179 | Patient-sampled training and weighted scan TUNE selection.
+"""COMP3710 | s4984179 | Equal-slice training and TUNE selection.
 
 Input: slice manifest, image root and CNN/GFNet configuration.
 Output: selected-best/latest weights, epoch metrics and a run summary.
 Usage: python train.py --help; production runs require an allocated A100.
 """
 
-
 import argparse
-
-
-from collections import defaultdict
-
-
 from dataclasses import asdict, dataclass
-
-
 import hashlib
-
-
 import json
-
-
 import math
-
-
 import os
-
-
 import platform
-
-
 import random
-
-
 from pathlib import Path
-
-
 import time
 
-
 import numpy as np
-
-
 import torch
-
-
 from torch.nn import functional as F
 
-
 from dataset import ADNISlices, make_loader, read_manifest
-
-
 from modules import BaselineCNN, GFNet
 
 
@@ -61,11 +31,10 @@ class Config:
     seed: int = 3710
     weight_decay: float = 0.01
     batch_size: int = 64
-    max_epochs: int = 60
-    warmup_epochs: int = 5
-    min_epochs: int = 30
-    patience: int = 12
-    min_delta: float = 1e-4
+    max_epochs: int = 30
+    warmup_epochs: int = 2
+    min_epochs: int = 20
+    patience: int = 8
 
     def validate(self):
         if self.model not in ("cnn", "gfnet"):
@@ -148,7 +117,7 @@ def learning_rate(step, total_steps, warmup_steps, peak):
     if not 0 <= step < total_steps or not 0 <= warmup_steps < total_steps:
         raise ValueError("Learning-rate cursor is outside its declared horizon")
     if step < warmup_steps:
-        fraction = step / max(1, warmup_steps - 1)
+        fraction = (step + 1) / warmup_steps
     else:
         fraction = (1 + math.cos(math.pi * (step - warmup_steps)
                                 / max(1, total_steps - warmup_steps - 1))) / 2
@@ -156,24 +125,25 @@ def learning_rate(step, total_steps, warmup_steps, peak):
 
 
 def is_better(candidate, best):
-    """Strictly minimize subject-weighted scan NLL; exact ties stay earlier."""
-    return best is None or candidate["weighted_scan_nll"] < best["weighted_scan_nll"]
+    """More correct TUNE slices, then lower NLL; equal ties keep the earlier fit."""
+    if best is not None and candidate["n"] != best["n"]:
+        raise ValueError("Compare the same complete TUNE population")
+    return best is None or (candidate["correct"], -candidate["nll"]) > (best["correct"], -best["nll"])
 
 
-def advance_selection(tune, best, bad_epochs, epoch, config, anchor=None):
-    """Keep strict-best weights separately from the min-delta patience anchor."""
-    value = tune["weighted_scan_nll"]
-    if anchor is None or value <= anchor - config.min_delta:
-        anchor, bad_epochs = value, 0
-    else:
-        bad_epochs += 1
-    selected = is_better(tune,best)
+def advance_selection(tune, best, bad_epochs, epoch, config):
+    """An NLL-only tie-break can select weights but never reset accuracy patience."""
+    improved = best is None or tune["correct"] > best["correct"]
+    bad_epochs = 0 if improved else bad_epochs + 1
+    selected = is_better(tune, best)
     if selected:
-        best = {"epoch":epoch,"n":tune["n"],"correct":tune["correct"],
-                "nll":tune["nll"],"weighted_scan_nll":value}
-    reason = "epoch_cap" if epoch == config.max_epochs else (
-        "patience" if epoch >= config.min_epochs and bad_epochs >= config.patience else None)
-    return best,bad_epochs,selected,reason,anchor
+        best = {"epoch": epoch, "n": tune["n"], "correct": tune["correct"], "nll": tune["nll"]}
+    reason = None
+    if epoch == config.max_epochs:
+        reason = "epoch_cap"
+    elif epoch >= config.min_epochs and bad_epochs >= config.patience:
+        reason = "patience"
+    return best, bad_epochs, selected, reason
 
 
 def probabilities(margins):
@@ -210,52 +180,10 @@ def slice_metrics(labels, margins):
     }
 
 
-def weighted_probability_metrics(labels, probability, weights=None):
-    """Binary probability measures with explicit weight mass and clipped NLL."""
-    y,p = np.asarray(labels,dtype=int),np.asarray(probability,dtype=float)
-    w = np.ones(len(y)) if weights is None else np.asarray(weights,dtype=float)
-    if not len(y) or p.shape != y.shape or w.shape != y.shape or np.any(w<0) or not np.isfinite(p).all():
-        raise ValueError("Need aligned, finite probabilities and nonnegative weights")
-    total = math.fsum(w)
-    if total <= 0 or np.any((p<0)|(p>1)):
-        raise ValueError("Need positive weight mass and probabilities in [0,1]")
-    q = np.clip(p,1e-7,1-1e-7)
-    correct = (p>=.5)==y
-    return dict(n=len(y),weight_mass=total,
-        accuracy=math.fsum(w[correct])/total,
-        nll=math.fsum(w*(-y*np.log(q)-(1-y)*np.log1p(-q)))/total,
-        brier=math.fsum(w*(p-y)**2)/total)
-
-
-def scan_summary(rows, records):
-    """Average slice probabilities per scan and give each patient weight one.
-
-    Each scan receives 1/V where V is that patient's number of scans. The
-    resulting weighted scan NLL is the V1 checkpoint-selection objective.
-    """
-    by_path = {r["path"]:float(probabilities(r["margin"])) for r in records}
-    if len(by_path)!=len(records) or set(by_path)!={r["relative_image_path"] for r in rows}:
-        raise ValueError("Need one probability for every declared slice")
-    groups = defaultdict(list)
-    for row in rows:
-        groups[(row["subject_id"],row["scan_id"])].append(row)
-    visits = defaultdict(int)
-    for subject,_ in groups: visits[subject]+=1
-    scans=[]
-    for (subject,scan),members in sorted(groups.items()):
-        p=math.fsum(by_path[r["relative_image_path"]] for r in members)/len(members)
-        scans.append(dict(subject_id=subject,scan_id=scan,label=int(members[0]["label"]),
-                          probability_ad=p,weight=1/visits[subject],visits=visits[subject]))
-    report=weighted_probability_metrics([r["label"] for r in scans],
-        [r["probability_ad"] for r in scans],[r["weight"] for r in scans])
-    return dict(scans=scans,weighted_scan_nll=report["nll"],weighted_scan_metrics=report,
-                scan_count=len(scans),subject_count=len(visits))
-
-
 def run_epoch(model, loader, device, *, optimizer=None, step=0, config=None):
     """Train with an optimizer, otherwise evaluate without gradients.
 
-    Consume all sampler slices and return (metrics, per-slice records, step).
+    Consume all loader slices and return (metrics, per-slice records, step).
     Training metrics are online; evaluation uses fixed weights and sample-
     weighted loss. When config is provided, step drives the global LR schedule.
     """
@@ -299,11 +227,9 @@ def run_epoch(model, loader, device, *, optimizer=None, step=0, config=None):
             )
     if device.type == "cuda":
         torch.cuda.synchronize(device)
-    if not records or len(records) != len(loader.sampler):
-        raise ValueError("Epoch must cover the declared sampler")
+    if not records or len(records) != len(loader.dataset):
+        raise ValueError("Epoch must cover every slice")
     metrics = slice_metrics([row["label"] for row in records], [row["margin"] for row in records])
-    if not training:
-        metrics["weighted_scan_nll"] = scan_summary(loader.dataset.rows, records)["weighted_scan_nll"]
     metrics.update({
         "mean_loss": loss_sum / len(records), "elapsed_s": time.perf_counter() - started,
         "updates": step - initial_step, "clipped_updates": clipped,
@@ -365,7 +291,7 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
 
     epochs limits this invocation; config.max_epochs retains the LR horizon.
     resume restores latest weights, optimizer, RNG, progress and patience.
-    Return epoch history, selecting best by subject-weighted scan NLL.
+    Return epoch history, selecting best by TUNE correct count then NLL.
     """
     config.validate()
     if train_data.partition != "train" or tune_data.partition != "tune":
@@ -376,7 +302,7 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
     saved = None
     if resume:
         saved = torch.load(output / "latest.pt", map_location="cpu", weights_only=True)
-        if (saved["format"] != "sampled-latest-v1"
+        if (saved["format"] != "slice-latest-v1"
                 or saved["identity"]["config"] != asdict(config)
                 or saved["identity"]["manifest_sha256"] != manifest_sha256):
             raise ValueError("Resume requires matching configuration and manifest")
@@ -395,14 +321,12 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
     runtime = {**runtime, "sources": source_identity()}
     history, best, best_checkpoint = [], None, None
     bad_epochs, step, completed = 0, 0, 0
-    anchor = None
     if saved is not None:
         identity = saved["identity"]
         model.load_state_dict(saved["model"])
         optimizer.load_state_dict(saved["optimizer"])
         history, best, best_checkpoint = saved["history"], saved["best"], saved["best_checkpoint"]
         bad_epochs, step, completed = saved["bad_epochs"], saved["step"], saved["epoch"]
-        anchor = saved["anchor"]
         # latest is authoritative if a stop interrupted the separate best export.
         save_checkpoint(output / "best.pt", best_checkpoint)
         restore_rng(saved["rng"], device)
@@ -416,12 +340,12 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
             model, train_loader, device, optimizer=optimizer, step=step, config=config,
         )
         tune_result, _, _ = run_epoch(model, tune_loader, device)
-        best, bad_epochs, selected, reason, anchor = advance_selection(
-            tune_result, best, bad_epochs, epoch, config, anchor,
+        best, bad_epochs, selected, reason = advance_selection(
+            tune_result, best, bad_epochs, epoch, config,
         )
         if selected:
             best_checkpoint = {
-                "format": "sampled-best-v1", "identity": identity, "epoch": epoch,
+                "format": "slice-best-v1", "identity": identity, "epoch": epoch,
                 "tune": tune_result,
                 "model": {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
             }
@@ -429,8 +353,8 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
                         "tune": tune_result, "lr": optimizer.param_groups[0]["lr"], "runtime": runtime})
         status = "complete" if reason else "paused"
         save_checkpoint(output / "latest.pt", {
-            "format": "sampled-latest-v1", "identity": identity, "epoch": epoch,
-            "step": step, "best": best, "bad_epochs": bad_epochs, "anchor": anchor,
+            "format": "slice-latest-v1", "identity": identity, "epoch": epoch,
+            "step": step, "best": best, "bad_epochs": bad_epochs,
             "status": status, "stop_reason": reason,
             "model": {k: v.detach().cpu() for k, v in model.state_dict().items()},
             "optimizer": optimizer.state_dict(), "history": history,
@@ -442,7 +366,7 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
         write_json(output / "result.json", {
             "status": status, "epoch": epoch, "updates": step,
             "stop_reason": reason, "best": best,
-            "train_presentations": epoch * len(train_loader.sampler),
+            "train_presentations": epoch * len(train_data),
             "tune_presentations": epoch * len(tune_data),
         })
         print(f"epoch={epoch} lr={optimizer.param_groups[0]['lr']:.6g} "
@@ -452,26 +376,6 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
         if reason:
             break
     return history
-
-
-def experiment_plan():
-    """Reserve six seed-3710 LR fits and four additional selected-LR fits."""
-    peaks=(1e-4,3e-4,1e-3)
-    development=[dict(model=m,seed=3710,lr=lr) for m in ("cnn","gfnet") for lr in peaks]
-    additional=[dict(model=m,seed=seed,lr=None) for m in ("cnn","gfnet") for seed in (3711,3712)]
-    return dict(development=development,additional=additional,reuse_winning_seed=3710)
-
-
-def select_development(records):
-    """Require all six candidates, then minimize best weighted scan NLL."""
-    records=list(records)
-    expected={(m,3710,lr) for m in ("cnn","gfnet") for lr in (1e-4,3e-4,1e-3)}
-    keys=[(r["model"],r["seed"],r["lr"]) for r in records]
-    if len(keys)!=6 or set(keys)!=expected or any(r["status"]!="complete" for r in records):
-        raise ValueError("Selection requires exactly six completed development fits")
-    return {m:min((r for r in records if r["model"]==m),
-        key=lambda r:(r["best"]["weighted_scan_nll"],(1e-4,3e-4,1e-3).index(r["lr"])))
-        for m in ("cnn","gfnet")}
 
 
 def main():
@@ -484,11 +388,10 @@ def main():
     parser.add_argument("--seed", type=int, default=3710)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--max-epochs", type=int, default=60)
-    parser.add_argument("--warmup-epochs", type=int, default=5)
-    parser.add_argument("--min-epochs", type=int, default=30)
-    parser.add_argument("--patience", type=int, default=12)
-    parser.add_argument("--min-delta", type=float, default=1e-4)
+    parser.add_argument("--max-epochs", type=int, default=30)
+    parser.add_argument("--warmup-epochs", type=int, default=2)
+    parser.add_argument("--min-epochs", type=int, default=20)
+    parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--epochs", type=int, help="Additional complete epochs this invocation; keep the global LR horizon")
     parser.add_argument("--resume", action="store_true", help="Continue this output directory's latest.pt")
     args = parser.parse_args()
