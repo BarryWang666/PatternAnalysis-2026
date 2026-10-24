@@ -605,6 +605,20 @@ not create a new independent cohort: V1 already evaluated its TEST population.
 V2 results must identify this earlier exposure and must not be described as
 a first-ever evaluation of previously unseen study patients.
 
+### Traverse every TRAIN slice once and retain all evaluation images
+
+The V2 loader samples every one of the 18,560 TRAIN slices once per epoch,
+using a private generator seeded by training seed plus epoch for order. It
+retains final partial batches in every role. There are 290 batch-64 updates
+per full TRAIN epoch instead of V1's 128 sampled updates.
+
+The change aligns training exposure with the assessed image population.
+Patients with more images now contribute more slices, as the image-level
+objective entails; patient IDs continue to prevent partition overlap. There
+is no patient or scan voting, probability averaging or patient-weighted loss.
+Native grayscale scaling remains [0,1] at this starting point, so the sampling
+change is not bundled with resizing, augmentation or pretrained normalization.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
