@@ -1322,6 +1322,84 @@ two arms; native Pyramid reload checks use no optimizer. No ADNI image,
 CALIBRATION or TEST data is used by these checks. Native A100 memory and
 execution cost still need measurement before choosing launch resources.
 
+### Compare coarse-stage depth and LR within the new hierarchy
+
+![Native rectangular hierarchical GFNet](figures/gfnet_pyramid.png)
+
+The new study holds the fine and middle stages at two blocks each. It varies
+only coarse-stage depth (two or four blocks) and peak LR (3e-4 or 1e-4):
+
+| Fit | Stage depths | Peak LR | Direct comparison |
+| --- | --- | --- | --- |
+| P1 | 2 / 2 / 2 | 3e-4 | Compact hierarchical reference |
+| P2 | 2 / 2 / 2 | 1e-4 | P1: lower LR only |
+| P3 | 2 / 2 / 4 | 3e-4 | P1: two additional coarse blocks only |
+| P4 | 2 / 2 / 4 | 1e-4 | P2: coarse capacity; P3: LR |
+
+The lower LR is tested again because residual scaling and stage-wise widths
+change the optimization problem; its failure in the flat smoothed I model
+cannot decide its effect here. Smoothing is set to zero after the six-block
+comparison showed poorer accuracy and more confident false negatives with it.
+Existing G is retained as a saved architectural reference without repeating
+its training. The extended hierarchy's 4.12 million parameters are close to
+G's 4.03 million, providing a useful approximate-capacity comparison alongside
+the smaller 2.93-million model. It is not an exact parameter-matched ablation.
+This bounded factorial study avoids simultaneously introducing new losses,
+input scales, class weights or additional attention mechanisms.
+
+All four fits use new weights and seed 3710, the existing patient-disjoint
+manifest, every TRAIN slice once per epoch, [0,1] pixels and the same mild
+TRAIN geometry. Keep batch 64, AdamW decay 0.01, thirty maximum epochs, two
+warmup epochs, minimum twenty and accuracy patience eight. Ordinary complete
+TUNE slice accuracy selects weights and NLL only breaks exact ties. Each
+fit's ceiling is 8,700 updates, 556,800 TRAIN and 85,800 TUNE presentations;
+early stopping may reduce it. A recipe above 80% still requires seeds
+3711/3712 before a stability claim, and confident errors remain part of the
+research question regardless of total accuracy.
+
+### Measure native A100 cost and submit the four fresh fits
+
+The two native variants passed the short synthetic batch-64 A100 probe,
+job 696137, exit 0:0 in thirteen seconds. Its recorded allocation was an
+A100-PCIE-40GB on a100-b in a100-test, with deterministic FP32 and 2/2
+threads. Both variants used the same production model/optimizer construction;
+each performed two synthetic updates and an evaluation forward, then removed
+its disposable synthetic checkpoint files.
+
+| Stage depths | Parameters | Peak allocated / reserved | Second synthetic update | Synthetic latest / best bytes |
+| --- | --- | --- | --- | --- |
+| 2 / 2 / 2 | 2,926,562 | 3.75 / 3.93 GiB | 0.120 s | 46,948,939 / 11,729,916 |
+| 2 / 2 / 4 | 4,118,498 | 4.18 / 4.40 GiB | 0.139 s | 66,048,331 / 16,503,616 |
+
+These are a small memory/cost probe, not an inference benchmark or a measured
+real-data epoch estimate. Image decoding, data transfer, checkpoint persistence
+and cold startup add costs. Batch 64 fits comfortably, and the two-hour limit
+is retained with substantial allowance over the synthetic compute cost and
+previous real-data runs. Measured full checkpoint sizes allow approximately
+0.474 GiB for the four fits' latest/best files plus simultaneous temporary
+latest saves; an additional 1 GiB is required at submission. Available storage
+was 3.898 GiB. No old experiment payload was removed to make this round fit.
+
+The native module checks and five integration checks also passed on Rangpur's
+CPU runtime before the probe and submission. The four source files and pinned
+manifest were checked on deployment and again by the submission entry. All
+four training jobs were then submitted exactly once on 25 October 2026:
+
+| Fit | Job | Stage depths / peak LR | Saved 15:28 Brisbane observation |
+| --- | --- | --- | --- |
+| P1 | 696161 | 2 / 2 / 2; 3e-4 | Pending; nodes unavailable/reserved |
+| P2 | 696162 | 2 / 2 / 2; 1e-4 | Pending; priority |
+| P3 | 696163 | 2 / 2 / 4; 3e-4 | Pending; priority |
+| P4 | 696164 | 2 / 2 / 4; 1e-4 | Pending; priority |
+
+Each requests one A100, two CPUs and two hours across comp3710, a100 and
+a100-grind. The twenty-minute test partition was useful for the probe and is
+excluded from these full fits. At this observation no actual training GPU,
+completed epoch or metric was established; forecasts are not allocations.
+The independent jobs can start in scheduler order. Their later trajectories
+will determine whether hierarchy improves generalization and confident
+errors. Submission itself supplies no evidence that the 80% target is met.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
