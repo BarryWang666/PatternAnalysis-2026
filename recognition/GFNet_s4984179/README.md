@@ -1218,6 +1218,45 @@ itself does not establish improvement. The intended decision remains whether
 capacity reduction and/or smoothing improve the stem model's slice accuracy
 and reliability sufficiently to justify multi-seed confirmation.
 
+### Capacity reduction helps, but the flat representation still overfits
+
+All four capacity-round jobs completed normally through accuracy patience.
+The comparisons below use each run's selected checkpoint over the same 2,860
+TUNE slices; high confidence means a raw maximum probability of at least 0.90.
+
+| Fit | Job | Terminal / selected epoch | Correct | Slice accuracy | NLL | AD recall | Confident errors / FNs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| F: twelve blocks, smoothing 0.05 | 695715 | 25 / 17 | 2157 | 75.42% | 0.7882 | 57.42% | 584 / 477 |
+| G: six blocks, no smoothing | 695716 | 20 / 7 | 2168 | 75.80% | 0.9047 | 66.82% | 409 / 299 |
+| H: six blocks, smoothing 0.05 | 695717 | 29 / 21 | 2102 | 73.50% | 0.8652 | 54.70% | 635 / 509 |
+| I: twelve blocks, smoothing 0.05, LR 1e-4 | 695718 | 21 / 13 | 2122 | 74.20% | 0.7742 | 63.86% | 511 / 341 |
+
+G improves on the preceding twelve-block unsmoothed D by 27 correct slices,
+0.94 percentage points, and 161 fewer confident false negatives. It remains
+120 correct slices short of exactly 80%. Its selected epoch seven has online
+TRAIN accuracy 94.02% and TUNE accuracy 75.80%; at epoch twenty these become
+99.45% and 70.63%. TUNE NLL increases from 0.9047 to 2.5903 and confident
+false negatives from 299 to 569. Online augmented training and fixed-weight
+validation differ, but this direction across epochs supports overfitting and
+confidence deterioration rather than assuming that more fitting is enough.
+
+Smoothing substantially improves D's NLL when used in F, yet AD recall falls
+and confident false negatives increase from 460 to 477. Smoothing the smaller
+model, H versus G, reduces accuracy and increases confident errors. I's lower
+LR also does not improve accuracy over F. These controlled, single-seed
+results do not support adopting smoothing or a lower LR indiscriminately.
+
+The earlier overlapping stem gained 5.24 percentage points, whereas reducing
+Fourier depth added less than one point. The next hypothesis is therefore to
+process finer spatial features before all four downsampling operations have
+finished. A compact hierarchical GFNet can alternate Fourier processing and
+local downsampling. This is a new architecture study, not evidence that the
+current rectangular FFT is incorrect. The source comparison found no obvious
+FFT-axis or residual-path defect, and hierarchy is not guaranteed to reach 80%.
+CNN's three-seed TUNE recipe is retained while its confident errors and final
+TEST performance remain unresolved. The known prior TEST exposure also remains
+a limitation of this reused cohort, regardless of newly initialized weights.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
