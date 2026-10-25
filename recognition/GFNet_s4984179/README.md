@@ -1069,6 +1069,37 @@ batch; and exact continuous-versus-resumed learning with TRAIN augmentation
 and smoothing. The checks use synthetic fixtures and establish implementation
 behavior, not real-data performance. Their scripts remain outside submission.
 
+### Launch independent seed, local-feature and smoothing experiments
+
+The four fits were submitted independently on 25 October, so an eligible
+A100 can run any available experiment. Each requests one A100, two CPUs and
+a two-hour limit; the production entry sets deterministic FP32 and 2/2 Torch
+threads. Both CNN fits use the original decay 0.01 and no geometry. Each GFNet
+fit uses mild geometry and changes one further factor relative to GFNet-C.
+
+| Experiment | Job | Seed | Distinguishing configuration | Saved 10:49 Brisbane status |
+| --- | --- | --- | --- | --- |
+| CNN baseline repeat | 695228 | 3711 | Original CNN recipe | Running, A100 on a100-3 |
+| CNN baseline repeat | 695229 | 3712 | Original CNN recipe | Running, A100 on a100-5 |
+| GFNet-D | 695230 | 3710 | Convolutional stem, no smoothing | Running, A100 on a100-8 |
+| GFNet-E | 695231 | 3710 | Patch embedding, smoothing 0.05 | Pending |
+
+The common settings are LR 3e-4, batch 64, 30 maximum epochs, two warmup
+epochs, minimum 20 epochs and accuracy patience eight. Every completed epoch
+uses 18,560 TRAIN and 2,860 TUNE slices, with 290 updates and final partial
+batches retained. TUNE accuracy determines selected weights; ordinary NLL
+breaks exact ties. Compare accuracy, class recalls and confident errors from
+the same selected checkpoint rather than choosing separate favorable epochs.
+
+Five focused checks passed on both local and Rangpur CPU runtimes before
+submission, including the new native-size model and exact synthetic resume.
+The three allocated processes recorded A100-PCIE-40GB and 2/2 threads; the
+pending fit had no established GPU. No complete epoch was present in this
+initial snapshot, so running work was not quantified. These are submission
+observations, not completed results. CNN repeats will test development-set
+seed stability; GFNet variants will test the two hypotheses, without assuming
+that either reaches 80% or fixes confidence reliability.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
