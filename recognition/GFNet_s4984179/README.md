@@ -1046,6 +1046,29 @@ embedding. Native-size CPU checks confirmed the grid, finite gradients through
 both the stem and Fourier filters, and exact prediction after saved-weight
 reload; these checks establish executability rather than accuracy improvement.
 
+### Isolate label smoothing from architectural changes
+
+GFNet-E retains the patch input layer and mild TRAIN geometry of GFNet-C,
+adding only `--label-smoothing 0.05`. For two classes, the target distribution
+becomes 0.975 for the labelled class and 0.025 for the other class. This reduces
+the incentive for arbitrarily large training logits, a hypothesis motivated by
+the augmented baseline's 734 confident errors and NLL 2.3910. It is not a
+calibration procedure and does not guarantee either higher accuracy or honest
+confidence on new patients.
+
+Smoothing applies only to TRAIN cross-entropy. TUNE evaluation and checkpoint
+selection continue to use ordinary equal-slice accuracy and unsmoothed NLL;
+raw TRAIN NLL is also retained separately from the smoothed training loss.
+The default is zero, so the CNN seed checks keep their existing objective.
+The chosen smoothing amount is stored in checkpoints and checked on resume.
+
+Five temporary synthetic checks passed locally: native stem shape, gradients
+and selected-weight reload; legacy patch-checkpoint loading; option validation;
+independent smoothed-loss arithmetic with an unsmoothed final partial TUNE
+batch; and exact continuous-versus-resumed learning with TRAIN augmentation
+and smoothing. The checks use synthetic fixtures and establish implementation
+behavior, not real-data performance. Their scripts remain outside submission.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

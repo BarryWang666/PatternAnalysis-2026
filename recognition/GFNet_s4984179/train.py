@@ -38,6 +38,7 @@ class Config:
     input_scale: str = "zero_one"
     augment: bool = False
     gfnet_embedding: str = "patch"
+    label_smoothing: float = 0.0
 
     def validate(self):
         if self.model not in ("cnn", "gfnet"):
@@ -51,6 +52,8 @@ class Config:
         if self.gfnet_embedding not in ("patch", "conv") or (
                 self.model == "cnn" and self.gfnet_embedding != "patch"):
             raise ValueError("Conv embedding is a GFNet-only option")
+        if not math.isfinite(self.label_smoothing) or not 0 <= self.label_smoothing < 1:
+            raise ValueError("Label smoothing must be in [0,1)")
         if (not 0 <= self.seed < 2**32 or self.batch_size < 1 or self.patience < 1
                 or not 0 <= self.warmup_epochs < self.max_epochs
                 or not 1 <= self.min_epochs <= self.max_epochs):
@@ -216,7 +219,8 @@ def run_epoch(model, loader, device, *, optimizer=None, step=0, config=None):
                         group["lr"] = lr
                 optimizer.zero_grad(set_to_none=True)
             logits = model(images)
-            loss = F.cross_entropy(logits, labels)
+            smoothing = config.label_smoothing if training and config is not None else 0.0
+            loss = F.cross_entropy(logits, labels, label_smoothing=smoothing)
             if not torch.isfinite(loss):
                 raise FloatingPointError("Nonfinite loss")
             if training:
@@ -403,6 +407,8 @@ def main():
     parser.add_argument("--input-scale", choices=("zero_one", "minus_one_one"), default="zero_one")
     parser.add_argument("--augment", action="store_true", help="TRAIN-only rotation +/-5 degrees and translation +/-2%%")
     parser.add_argument("--gfnet-embedding", choices=("patch", "conv"), default="patch")
+    parser.add_argument("--label-smoothing", type=float, default=0.0,
+                        help="TRAIN cross-entropy smoothing; TUNE NLL stays unsmoothed")
     parser.add_argument("--epochs", type=int, help="Additional complete epochs this invocation; keep the global LR horizon")
     parser.add_argument("--resume", action="store_true", help="Continue this output directory's latest.pt")
     args = parser.parse_args()
