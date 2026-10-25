@@ -1193,6 +1193,31 @@ will need seeds 3711/3712. If this bounded comparison remains inadequate, a
 hierarchical GFNet architecture is a separate next hypothesis rather than an
 unlimited expansion of the present parameter grid.
 
+### Submit the bounded capacity and regularization comparison
+
+The four fresh GFNet fits were submitted once on 25 October after the same
+eight focused checks passed on Rangpur CPU as well as locally. Source copies,
+manifest identity, batch arguments and shell syntax were checked before
+submission. Each job requests one A100, two CPUs and two hours across the
+eligible comp3710, a100 and a100-grind partitions. Jobs are independent, so
+actual execution order depends on available allocations rather than a chained
+training dependency.
+
+| Experiment | Job | Blocks / smoothing / peak LR | Saved 13:30 Brisbane status |
+| --- | --- | --- | --- |
+| GFNet-F | 695715 | 12 / 0.05 / 3e-4 | Pending; nodes unavailable/reserved |
+| GFNet-G | 695716 | 6 / 0 / 3e-4 | Pending; priority |
+| GFNet-H | 695717 | 6 / 0.05 / 3e-4 | Pending; priority |
+| GFNet-I | 695718 | 12 / 0.05 / 1e-4 | Pending; priority |
+
+No allocation, GPU identity, epoch or metric existed at this observation;
+forecast node/start values do not establish actual execution. The maximum
+budget is 30 complete epochs per fit, with 18,560 TRAIN and 2,860 TUNE slices
+and 290 updates per epoch. Early stopping can reduce that work. Submission
+itself does not establish improvement. The intended decision remains whether
+capacity reduction and/or smoothing improve the stem model's slice accuracy
+and reliability sufficiently to justify multi-seed confirmation.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
