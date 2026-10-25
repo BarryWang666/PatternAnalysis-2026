@@ -1162,6 +1162,37 @@ Changed-depth resume is rejected by the existing configuration comparison.
 Temporary tests stay outside the submission; these checks establish execution
 and reproducibility, not a new accuracy result.
 
+### Separate depth, smoothing and learning-rate effects
+
+The next four fresh fits use the convolutional stem, mild TRAIN geometry,
+[0,1] pixels, seed 3710, batch 64 and weight decay 0.01. They retain the same
+30-epoch horizon, two warmup epochs, minimum 20 and accuracy patience eight.
+
+| Fit | Fourier blocks | TRAIN smoothing | Peak LR | Main comparison |
+| --- | --- | --- | --- | --- |
+| GFNet-F | 12 | 0.05 | 3e-4 | Existing D: add smoothing to the stem model |
+| GFNet-G | 6 | 0 | 3e-4 | Existing D: reduce depth only |
+| GFNet-H | 6 | 0.05 | 3e-4 | G: smoothing effect; F: depth effect |
+| GFNet-I | 12 | 0.05 | 1e-4 | F: lower LR only |
+
+Existing D together with F/G/H forms a two-by-two depth/smoothing comparison,
+so D does not need to be repeated. H tests whether a smaller representation
+benefits differently from soft targets. I checks a lower LR on the smoothed
+stem model; the plain patch model's earlier LR result cannot determine the
+effect after these architectural and objective changes. Separate comparisons
+make a negative result informative rather than attributing a combined change
+to whichever explanation appears attractive afterward.
+
+All fits start with new weights. Complete equal-slice TUNE accuracy still
+selects the checkpoint, with ordinary NLL breaking exact ties. The target is
+2,288 correct of 2,860 slices for at least 80%, or 2,289 for strictly above
+80%. AD/NC recall and confident errors must accompany that score. Lowering
+confidence alone does not prove better error identification; matched-coverage
+risk and calibration require their own later evaluation. A promising recipe
+will need seeds 3711/3712. If this bounded comparison remains inadequate, a
+hierarchical GFNet architecture is a separate next hypothesis rather than an
+unlimited expansion of the present parameter grid.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
