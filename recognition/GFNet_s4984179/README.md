@@ -1525,6 +1525,52 @@ resumed mixed training produce identical selected records. These checks use
 sixteen tiny AdamW steps per final run and synthetic fixtures, not real ADNI
 images. CUDA remained uninitialized in both environments.
 
+### Launch the paired MixUp and second-seed controls
+
+The four fits use the committed implementation at `97be835`, which passed
+eight focused checks on both local and Rangpur CPU runtimes. Deployment
+matches all four Python sources; the pinned 30,520-row manifest retains its
+680 patient identities and 18,560/2,860/3,180/5,920 partition counts. These
+are metadata checks, without image access. The earlier seven-check local
+development run and both final eight-check runs together used forty-eight
+tiny synthetic AdamW updates; their fixtures are outside the submitted code.
+
+No model dimensions or batch size change in this round. The preceding A100
+fits already measured the CNN and six-block GFNet at this batch size; MixUp
+adds batch interpolation and a second label loss without new model parameters.
+Its actual allocated GPU execution remains to be observed. Checkpoint-size
+measurements from the saved G/CNN controls, plus room for selected records and
+temporary saves, give a simultaneous four-fit reserve of 545,036,183 bytes.
+With another 1 GiB of free-space allowance, the submission gate requires
+1,618,778,007 bytes; 3,902,799,872 bytes were available. Existing checkpoints
+were retained.
+
+All four were submitted once on 25 October 2026. At the bounded observation
+at 21:36:30 Brisbane, their states were:
+
+| Fit | Job | Model / seed / MixUp alpha | Observed state |
+| --- | --- | --- | --- |
+| M1 | 697319 | Six-block convolutional GFNet / 3710 / 0.2 | Pending; nodes unavailable/reserved |
+| M2 | 697320 | Same GFNet / 3711 / 0 | Pending; priority |
+| M3 | 697321 | Same GFNet / 3711 / 0.2 | Pending; priority |
+| M4 | 697322 | Original CNN / 3711 / 0.2 | Pending; priority |
+
+Each independent job requests one A100, two CPUs and two hours across
+comp3710, a100 and a100-grind; the first available eligible allocation can
+start it. The twenty-minute test partition is excluded. Runtime/restarts
+were zero, no actual training node/GPU was assigned, and no completed epoch
+or metric existed in this observation. Forecast values do not establish
+an allocation. The maximum round budget is 120 epochs, 34,800 updates,
+2,227,200 source TRAIN-slice inputs and 343,200 ordinary TUNE inputs; early
+stopping reduces the actual totals. MixUp pairs reuse the loaded batch and
+these counts are not independent image-decode measurements.
+
+M1 and M3 will be judged against their corresponding unmixed seed controls,
+with M2 testing how well G reproduces on another seed. M4 addresses the
+saved CNN 3711 result while retaining the established CNN recipe. No outcome
+is inferred from submission, and this four-fit development round does not
+automatically authorize a further recipe search or final TEST evaluation.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
