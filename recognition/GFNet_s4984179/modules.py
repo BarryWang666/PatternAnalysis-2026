@@ -173,21 +173,23 @@ class GFNetBlock(nn.Module):
 
 
 class GFNet(nn.Module):
-    """Classify [B,1,240,256] slices with twelve width-256 GFNet blocks.
+    """Classify [B,1,240,256] slices with configurable width-256 GFNet blocks.
 
     Position embeddings preserve patch location. Token averaging and a linear
     head return raw NC/AD logits [B,2]; evaluation disables stochastic depth.
     """
 
-    def __init__(self, embedding="patch"):
+    def __init__(self, embedding="patch", depth=12):
         super().__init__()
         if embedding not in ("patch", "conv"):
             raise ValueError("Choose patch or conv embedding")
+        if not isinstance(depth, int) or depth < 1:
+            raise ValueError("GFNet depth must be a positive integer")
         self.patch_embed = PatchEmbed() if embedding == "patch" else ConvStem()
         self.pos_embed = nn.Parameter(torch.zeros(1, 240, 256))
         self.blocks = nn.ModuleList(
-            GFNetBlock(self.patch_embed.grid_size, 256, i * 0.1 / 11)
-            for i in range(12)
+            GFNetBlock(self.patch_embed.grid_size, 256, i * 0.1 / max(1, depth - 1))
+            for i in range(depth)
         )
         self.norm = nn.LayerNorm(256, eps=1e-6)
         self.head = nn.Linear(256, 2)

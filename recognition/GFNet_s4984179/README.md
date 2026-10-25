@@ -1135,6 +1135,33 @@ comparisons motivate new experiments rather than retrospectively replacing
 checkpoints. GFNet still needs 147 additional correct TUNE slices to reach
 80%, and any promising recipe will require further seeds before final use.
 
+### Reduce Fourier-block capacity without changing the token representation
+
+GFNet's local stem is retained because its controlled comparison improved
+TUNE accuracy. The next capacity experiment changes the number of Fourier/MLP
+blocks from twelve to six while retaining width 256, the 15x16 grid, input
+stem, position embeddings, normalizations and classifier. Construction gives
+4,025,058 parameters for six blocks versus 7,599,330 for twelve. Reducing the
+number of repeated transformations tests whether the current model memorizes
+the available training subjects more readily than it learns transferable
+features; it does not assume that the smaller model must be better.
+
+`--gfnet-depth` controls construction and is saved in configuration and both
+checkpoint forms. Prediction reconstructs the saved depth; missing fields in
+older selected checkpoints mean twelve. DropPath still increases from zero
+to 0.1 across the selected depth, avoiding an accidental reduction of maximum
+regularization when the layer count changes. The default remains twelve;
+seeded patch and convolutional defaults matched the previous implementation's
+state tensors exactly in CPU checks.
+
+Eight focused local checks passed, including native six- and twelve-block
+forward/backward execution, finite stem/Fourier gradients, exact selected-
+weight reload, legacy loading, CLI argument forwarding, ordinary TUNE loss
+with label smoothing enabled for TRAIN, and exact synthetic augmented resume.
+Changed-depth resume is rejected by the existing configuration comparison.
+Temporary tests stay outside the submission; these checks establish execution
+and reproducibility, not a new accuracy result.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

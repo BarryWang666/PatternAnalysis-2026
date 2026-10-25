@@ -25,7 +25,8 @@ def load_selected_model(checkpoint, device="cpu"):
     if saved.get("format") != "slice-best-v1":
         raise ValueError("Use the selected best.pt checkpoint, not latest.pt")
     config = saved["identity"]["config"]
-    model = build_model(config["model"], config.get("gfnet_embedding", "patch"))
+    model = build_model(config["model"], config.get("gfnet_embedding", "patch"),
+                        config.get("gfnet_depth", 12))
     model.load_state_dict(saved["model"])
     model.to(device).eval()
     metadata = {key: value for key, value in saved.items() if key != "model"}

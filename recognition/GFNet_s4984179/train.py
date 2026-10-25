@@ -39,6 +39,7 @@ class Config:
     augment: bool = False
     gfnet_embedding: str = "patch"
     label_smoothing: float = 0.0
+    gfnet_depth: int = 12
 
     def validate(self):
         if self.model not in ("cnn", "gfnet"):
@@ -54,6 +55,9 @@ class Config:
             raise ValueError("Conv embedding is a GFNet-only option")
         if not math.isfinite(self.label_smoothing) or not 0 <= self.label_smoothing < 1:
             raise ValueError("Label smoothing must be in [0,1)")
+        if (not isinstance(self.gfnet_depth, int) or self.gfnet_depth < 1
+                or (self.model == "cnn" and self.gfnet_depth != 12)):
+            raise ValueError("Choose a positive GFNet depth; CNN uses the default")
         if (not 0 <= self.seed < 2**32 or self.batch_size < 1 or self.patience < 1
                 or not 0 <= self.warmup_epochs < self.max_epochs
                 or not 1 <= self.min_epochs <= self.max_epochs):
@@ -107,8 +111,9 @@ def a100_runtime(seed):
     return torch.device("cuda:0"), runtime
 
 
-def build_model(name, gfnet_embedding="patch"):
-    return {"cnn": BaselineCNN, "gfnet": lambda: GFNet(embedding=gfnet_embedding)}[name]()
+def build_model(name, gfnet_embedding="patch", gfnet_depth=12):
+    return {"cnn": BaselineCNN,
+            "gfnet": lambda: GFNet(embedding=gfnet_embedding, depth=gfnet_depth)}[name]()
 
 
 def build_optimizer(model, config):
@@ -409,6 +414,7 @@ def main():
     parser.add_argument("--gfnet-embedding", choices=("patch", "conv"), default="patch")
     parser.add_argument("--label-smoothing", type=float, default=0.0,
                         help="TRAIN cross-entropy smoothing; TUNE NLL stays unsmoothed")
+    parser.add_argument("--gfnet-depth", type=int, default=12)
     parser.add_argument("--epochs", type=int, help="Additional complete epochs this invocation; keep the global LR horizon")
     parser.add_argument("--resume", action="store_true", help="Continue this output directory's latest.pt")
     args = parser.parse_args()
@@ -424,7 +430,8 @@ def main():
     device, runtime = a100_runtime(config.seed)
     print(json.dumps({"train_slices": len(train_data), "tune_slices": len(tune_data),
                       "config": asdict(config), "runtime": runtime}), flush=True)
-    fit(build_model(config.model, config.gfnet_embedding), train_data, tune_data, config, output,
+    fit(build_model(config.model, config.gfnet_embedding, config.gfnet_depth),
+        train_data, tune_data, config, output,
         file_digest(args.manifest), device, runtime, resume=args.resume, epochs=args.epochs)
 
 
