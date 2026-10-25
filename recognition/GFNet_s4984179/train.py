@@ -41,6 +41,7 @@ class Config:
     label_smoothing: float = 0.0
     gfnet_depth: int = 12
     pyramid_depths: tuple = (2, 2, 2)
+    mixup_alpha: float = 0.0
 
     def validate(self):
         if self.model not in ("cnn", "gfnet", "gfnet_pyramid"):
@@ -56,6 +57,8 @@ class Config:
             raise ValueError("Embedding choice applies to the flat GFNet")
         if not math.isfinite(self.label_smoothing) or not 0 <= self.label_smoothing < 1:
             raise ValueError("Label smoothing must be in [0,1)")
+        if not math.isfinite(self.mixup_alpha) or self.mixup_alpha < 0:
+            raise ValueError("MixUp alpha must be finite and nonnegative")
         if (not isinstance(self.gfnet_depth, int) or self.gfnet_depth < 1
                 or (self.model != "gfnet" and self.gfnet_depth != 12)):
             raise ValueError("Choose a positive flat-GFNet depth; other models use its default")
@@ -173,6 +176,21 @@ def probabilities(margins):
     return np.exp(-np.logaddexp(0.0, -np.asarray(margins, dtype=np.float64)))
 
 
+def mixup_batch(images, labels, alpha):
+    """Interpolate a TRAIN batch and return its two label vectors and weight.
+
+    One Beta(alpha, alpha) draw and one permutation are shared by the batch.
+    NumPy/Torch RNG states are already captured by epoch-boundary checkpoints.
+    Alpha zero preserves images and RNG exactly, retaining the baseline path.
+    """
+    if alpha == 0:
+        return images, labels, labels, 1.0
+    weight = float(np.random.beta(alpha, alpha))
+    order = torch.randperm(len(images), device=images.device)
+    return (weight * images + (1 - weight) * images[order],
+            labels, labels[order], weight)
+
+
 def slice_metrics(labels, margins):
     """Compute equal-slice metrics from aligned 1D labels and logit margins.
 
@@ -210,8 +228,9 @@ def run_epoch(model, loader, device, *, optimizer=None, step=0, config=None):
     weighted loss. When config is provided, step drives the global LR schedule.
     """
     training = optimizer is not None
+    mixed = training and config is not None and config.mixup_alpha > 0
     model.train(training)
-    records, loss_sum, clipped = [], 0.0, 0
+    records, loss_sum, clipped, consumed = [], 0.0, 0, 0
     initial_step = step
     free_bytes = None
     if device.type == "cuda":
@@ -229,9 +248,18 @@ def run_epoch(model, loader, device, *, optimizer=None, step=0, config=None):
                     for group in optimizer.param_groups:
                         group["lr"] = lr
                 optimizer.zero_grad(set_to_none=True)
+            if mixed:
+                images, first_labels, second_labels, weight = mixup_batch(
+                    images, labels, config.mixup_alpha,
+                )
             logits = model(images)
             smoothing = config.label_smoothing if training and config is not None else 0.0
-            loss = F.cross_entropy(logits, labels, label_smoothing=smoothing)
+            if mixed:
+                loss = (weight * F.cross_entropy(logits, first_labels, label_smoothing=smoothing)
+                        + (1 - weight) * F.cross_entropy(
+                            logits, second_labels, label_smoothing=smoothing))
+            else:
+                loss = F.cross_entropy(logits, labels, label_smoothing=smoothing)
             if not torch.isfinite(loss):
                 raise FloatingPointError("Nonfinite loss")
             if training:
@@ -241,6 +269,9 @@ def run_epoch(model, loader, device, *, optimizer=None, step=0, config=None):
                 optimizer.step()
                 step += 1
             loss_sum += loss.item() * len(labels)
+            consumed += len(labels)
+            if mixed:
+                continue  # Mixed images have no single genuine class or slice prediction.
             margins = (logits[:, 1] - logits[:, 0]).detach().cpu().tolist()
             records.extend(
                 {"path": path, "subject_id": subject, "label": int(label), "margin": margin}
@@ -250,11 +281,13 @@ def run_epoch(model, loader, device, *, optimizer=None, step=0, config=None):
             )
     if device.type == "cuda":
         torch.cuda.synchronize(device)
-    if not records or len(records) != len(loader.dataset):
+    if not consumed or consumed != len(loader.dataset):
         raise ValueError("Epoch must cover every slice")
-    metrics = slice_metrics([row["label"] for row in records], [row["margin"] for row in records])
+    metrics = ({"n": consumed, "objective": "mixup", "accuracy": None, "nll": None}
+               if mixed else slice_metrics(
+                   [row["label"] for row in records], [row["margin"] for row in records]))
     metrics.update({
-        "mean_loss": loss_sum / len(records), "elapsed_s": time.perf_counter() - started,
+        "mean_loss": loss_sum / consumed, "elapsed_s": time.perf_counter() - started,
         "updates": step - initial_step, "clipped_updates": clipped,
         "initially_free_bytes": free_bytes,
         "peak_allocated_bytes": torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None,
@@ -325,8 +358,9 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
     saved = None
     if resume:
         saved = torch.load(output / "latest.pt", map_location="cpu", weights_only=True)
+        previous_config = {"mixup_alpha": 0.0, **saved["identity"]["config"]}
         if (saved["format"] != "slice-latest-v1"
-                or saved["identity"]["config"] != asdict(config)
+                or previous_config != asdict(config)
                 or saved["identity"]["manifest_sha256"] != manifest_sha256):
             raise ValueError("Resume requires matching configuration and manifest")
         if saved["status"] == "complete":
@@ -392,8 +426,10 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
             "train_presentations": epoch * len(train_data),
             "tune_presentations": epoch * len(tune_data),
         })
+        train_summary = (f"train_mixup_loss={train_result['mean_loss']:.4f}"
+                         if config.mixup_alpha > 0 else f"train_acc={train_result['accuracy']:.4f}")
         print(f"epoch={epoch} lr={optimizer.param_groups[0]['lr']:.6g} "
-              f"train_acc={train_result['accuracy']:.4f} tune_acc={tune_result['accuracy']:.4f} "
+              f"{train_summary} tune_acc={tune_result['accuracy']:.4f} "
               f"tune_nll={tune_result['nll']:.4f} "
               f"hc_fn={tune_result['high_confidence_false_negatives']}", flush=True)
         if reason:
@@ -420,6 +456,8 @@ def main():
     parser.add_argument("--gfnet-embedding", choices=("patch", "conv"), default="patch")
     parser.add_argument("--label-smoothing", type=float, default=0.0,
                         help="TRAIN cross-entropy smoothing; TUNE NLL stays unsmoothed")
+    parser.add_argument("--mixup-alpha", type=float, default=0.0,
+                        help="TRAIN-only batch MixUp Beta parameter; zero disables mixing")
     parser.add_argument("--gfnet-depth", type=int, default=12)
     parser.add_argument("--pyramid-depths", type=int, nargs=3, default=(2, 2, 2),
                         metavar=("FINE", "MIDDLE", "COARSE"),

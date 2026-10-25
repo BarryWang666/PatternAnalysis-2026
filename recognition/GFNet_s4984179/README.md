@@ -1472,6 +1472,37 @@ raw accuracy because positive temperature scaling leaves argmax unchanged.
 All development results remain TUNE results; repeated TUNE searches and the
 previous exposure of this cohort's TEST population limit final interpretation.
 
+### Keep the MixUp objective distinct from genuine slice evaluation
+
+`train.py --mixup-alpha 0.2` now draws one Beta(0.2,0.2) coefficient and one
+random permutation for each TRAIN batch. It forms a convex image mixture and
+minimizes the matching weighted sum of the two cross-entropies. Pairing reuses
+the already loaded batch; it does not open additional images or replace the
+all-slice loader with a sampled stream. The final partial batch is retained.
+Alpha zero takes the original path without drawing any mixing randomness.
+
+Mixed images have no single genuine diagnosis, so their history contains
+`objective: mixup`, the average mixed loss and source-slice/update counts;
+TRAIN accuracy and NLL are null. Logging an accuracy against only the first
+label would produce a misleading learning curve. TUNE retains ordinary,
+unmixed slice accuracy/NLL and all existing confidence diagnostics, even when
+the training configuration enables MixUp. Label smoothing remains zero in
+this study, keeping the intervention confined to image/label interpolation.
+
+The MixUp coefficient uses NumPy RNG and its permutation uses Torch RNG.
+Both are already captured in latest checkpoints along with augmentation and
+model randomness. The configuration saves alpha and rejects a changed value
+on resume. Older checkpoints without this field mean alpha zero; selected
+weight inference does not mix inputs or need a new network implementation.
+
+Seven temporary local CPU checks passed: exact interpolation, loss/gradient
+agreement with an independent two-label calculation, partial-batch coverage,
+unchanged ordinary evaluation, alpha-zero equality with the previous source,
+CLI/configuration binding, exact augmented continuous/resumed training and
+native CNN/GFNet finite gradients. The checks used sixteen tiny AdamW updates
+and synthetic images only. This verifies the implementation, not the expected
+ADNI accuracy benefit. Target-runtime checks precede deployment for training.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
