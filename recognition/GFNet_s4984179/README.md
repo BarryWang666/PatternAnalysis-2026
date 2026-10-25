@@ -1295,6 +1295,33 @@ residual identity passed. Seeded state tensors and stochastic-depth schedules
 of the existing patch12, conv12 and conv6 models matched the previous source.
 These checks used no optimizer or real images and do not establish accuracy.
 
+### Bind hierarchical configuration to training and selected-weight inference
+
+`train.py --model gfnet_pyramid --pyramid-depths 2 2 2` selects the compact
+variant; `--pyramid-depths 2 2 4` expands the last stage. The three depths are
+saved with the optimizer/latest state and selected weights. Prediction builds
+the same hierarchy from the selected checkpoint. Existing flat selected
+checkpoints retain their saved embedding/depth and use historical defaults
+when those fields are absent. Flat-only switches are rejected for the
+hierarchical model so that an experiment cannot silently request an unused
+embedding or layer count.
+
+The same trainer, all-slice sampling, unsmoothed TUNE evaluation and
+correct-count/NLL-tie selection serve the new model. LayerScale vectors join
+biases and normalization parameters in the no-decay AdamW group; feature
+matrices and Fourier weights retain the configured decay. Configuration
+binding rejects resuming with a different stage-depth sequence.
+
+Five temporary CPU integration checks passed: CLI forwarding/configuration,
+exact selected-weight reconstruction of both variants, old flat-checkpoint
+loading, optimizer groups and slice selection, and exact synthetic augmented
+continuous-versus-resumed training. The last check uses a tiny dropout model
+to exercise optimizer/RNG/progress restoration and rejects changed Pyramid
+depths before continuation. It performs eight tiny AdamW updates across the
+two arms; native Pyramid reload checks use no optimizer. No ADNI image,
+CALIBRATION or TEST data is used by these checks. Native A100 memory and
+execution cost still need measurement before choosing launch resources.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

@@ -21,7 +21,7 @@ import torch
 from torch.nn import functional as F
 
 from dataset import ADNISlices, make_loader, read_manifest
-from modules import BaselineCNN, GFNet
+from modules import BaselineCNN, GFNet, GFNetPyramid
 
 
 @dataclass(frozen=True)
@@ -40,10 +40,11 @@ class Config:
     gfnet_embedding: str = "patch"
     label_smoothing: float = 0.0
     gfnet_depth: int = 12
+    pyramid_depths: tuple = (2, 2, 2)
 
     def validate(self):
-        if self.model not in ("cnn", "gfnet"):
-            raise ValueError("Choose cnn or gfnet")
+        if self.model not in ("cnn", "gfnet", "gfnet_pyramid"):
+            raise ValueError("Choose cnn, gfnet or gfnet_pyramid")
         if not math.isfinite(self.lr) or self.lr <= 0:
             raise ValueError("Learning rate must be finite and positive")
         if not math.isfinite(self.weight_decay) or self.weight_decay < 0:
@@ -51,13 +52,17 @@ class Config:
         if self.input_scale not in ("zero_one", "minus_one_one"):
             raise ValueError("Choose zero_one or minus_one_one input scaling")
         if self.gfnet_embedding not in ("patch", "conv") or (
-                self.model == "cnn" and self.gfnet_embedding != "patch"):
-            raise ValueError("Conv embedding is a GFNet-only option")
+                self.model != "gfnet" and self.gfnet_embedding != "patch"):
+            raise ValueError("Embedding choice applies to the flat GFNet")
         if not math.isfinite(self.label_smoothing) or not 0 <= self.label_smoothing < 1:
             raise ValueError("Label smoothing must be in [0,1)")
         if (not isinstance(self.gfnet_depth, int) or self.gfnet_depth < 1
-                or (self.model == "cnn" and self.gfnet_depth != 12)):
-            raise ValueError("Choose a positive GFNet depth; CNN uses the default")
+                or (self.model != "gfnet" and self.gfnet_depth != 12)):
+            raise ValueError("Choose a positive flat-GFNet depth; other models use its default")
+        if (len(self.pyramid_depths) != 3
+                or any(not isinstance(depth, int) or depth < 1 for depth in self.pyramid_depths)
+                or (self.model != "gfnet_pyramid" and tuple(self.pyramid_depths) != (2, 2, 2))):
+            raise ValueError("Choose three positive Pyramid depths; other models use its default")
         if (not 0 <= self.seed < 2**32 or self.batch_size < 1 or self.patience < 1
                 or not 0 <= self.warmup_epochs < self.max_epochs
                 or not 1 <= self.min_epochs <= self.max_epochs):
@@ -111,9 +116,10 @@ def a100_runtime(seed):
     return torch.device("cuda:0"), runtime
 
 
-def build_model(name, gfnet_embedding="patch", gfnet_depth=12):
+def build_model(name, gfnet_embedding="patch", gfnet_depth=12, pyramid_depths=(2, 2, 2)):
     return {"cnn": BaselineCNN,
-            "gfnet": lambda: GFNet(embedding=gfnet_embedding, depth=gfnet_depth)}[name]()
+            "gfnet": lambda: GFNet(embedding=gfnet_embedding, depth=gfnet_depth),
+            "gfnet_pyramid": lambda: GFNetPyramid(stage_depths=pyramid_depths)}[name]()
 
 
 def build_optimizer(model, config):
@@ -400,7 +406,7 @@ def main():
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--model", choices=("cnn", "gfnet"), required=True)
+    parser.add_argument("--model", choices=("cnn", "gfnet", "gfnet_pyramid"), required=True)
     parser.add_argument("--lr", type=float, required=True)
     parser.add_argument("--seed", type=int, default=3710)
     parser.add_argument("--weight-decay", type=float, default=0.01)
@@ -415,10 +421,15 @@ def main():
     parser.add_argument("--label-smoothing", type=float, default=0.0,
                         help="TRAIN cross-entropy smoothing; TUNE NLL stays unsmoothed")
     parser.add_argument("--gfnet-depth", type=int, default=12)
+    parser.add_argument("--pyramid-depths", type=int, nargs=3, default=(2, 2, 2),
+                        metavar=("FINE", "MIDDLE", "COARSE"),
+                        help="Fourier block counts at 60x64, 30x32 and 15x16")
     parser.add_argument("--epochs", type=int, help="Additional complete epochs this invocation; keep the global LR horizon")
     parser.add_argument("--resume", action="store_true", help="Continue this output directory's latest.pt")
     args = parser.parse_args()
-    config = Config(**{key: getattr(args, key) for key in Config.__dataclass_fields__})
+    values = {key: getattr(args, key) for key in Config.__dataclass_fields__}
+    values["pyramid_depths"] = tuple(values["pyramid_depths"])
+    config = Config(**values)
     config.validate()
     source, output = Path(__file__).parent.resolve(), Path(args.output).resolve()
     if output == source or source in output.parents:
@@ -430,7 +441,7 @@ def main():
     device, runtime = a100_runtime(config.seed)
     print(json.dumps({"train_slices": len(train_data), "tune_slices": len(tune_data),
                       "config": asdict(config), "runtime": runtime}), flush=True)
-    fit(build_model(config.model, config.gfnet_embedding, config.gfnet_depth),
+    fit(build_model(config.model, config.gfnet_embedding, config.gfnet_depth, config.pyramid_depths),
         train_data, tune_data, config, output,
         file_digest(args.manifest), device, runtime, resume=args.resume, epochs=args.epochs)
 
