@@ -1503,6 +1503,28 @@ native CNN/GFNet finite gradients. The checks used sixteen tiny AdamW updates
 and synthetic images only. This verifies the implementation, not the expected
 ADNI accuracy benefit. Target-runtime checks precede deployment for training.
 
+### Retain the selected TUNE evidence without another inference pass
+
+Each epoch already computes aligned TUNE paths, patient IDs, true labels and
+raw logit margins. Previously `fit` discarded those records after calculating
+summary metrics. The selected checkpoint now retains its records and exports
+them with the selected epoch, metrics and source/data/configuration identity
+to `best-tune.json`. This supports later slice-level confidence and failure
+analysis without repeating inference merely to recover lost predictions.
+
+The latest checkpoint contains the selected payload, so resume can restore
+both best weights and the matching prediction export after an interrupted
+write. Older selected payloads without records remain loadable; their missing
+predictions are not invented. Mixing applies only to TRAIN: every saved TUNE
+record corresponds to one actual, unmodified slice and its genuine label.
+
+The final eight-check CPU suite passed locally and on Rangpur. It additionally reconciles the
+exported records against selected weights' epoch/metrics, recomputes complete
+slice metrics, and repairs a removed export through resume. Continuous and
+resumed mixed training produce identical selected records. These checks use
+sixteen tiny AdamW steps per final run and synthetic fixtures, not real ADNI
+images. CUDA remained uninitialized in both environments.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

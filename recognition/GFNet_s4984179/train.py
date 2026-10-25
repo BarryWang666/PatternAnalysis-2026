@@ -341,6 +341,20 @@ def restore_rng(state, device):
         torch.cuda.set_rng_state(state["cuda"], device)
 
 
+def save_tune_predictions(output, selected):
+    """Export the selected epoch's existing unmixed TUNE records, if available.
+
+    Keeping them inside the selected payload lets resume repair this export
+    without another model pass. Historical weights may have no such records.
+    """
+    if "tune_records" in selected:
+        write_json(Path(output) / "best-tune.json", {
+            "format": "slice-tune-predictions-v1", "partition": "tune",
+            "identity": selected["identity"], "epoch": selected["epoch"],
+            "metrics": selected["tune"], "records": selected["tune_records"],
+        })
+
+
 def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
         runtime, *, resume=False, epochs=None):
     """Fit TRAIN/TUNE datasets and persist complete epoch boundaries.
@@ -386,6 +400,7 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
         bad_epochs, step, completed = saved["bad_epochs"], saved["step"], saved["epoch"]
         # latest is authoritative if a stop interrupted the separate best export.
         save_checkpoint(output / "best.pt", best_checkpoint)
+        save_tune_predictions(output, best_checkpoint)
         restore_rng(saved["rng"], device)
     else:
         write_json(output / "config.json", {**identity, "runtime": runtime})
@@ -396,14 +411,14 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
         train_result, _, step = run_epoch(
             model, train_loader, device, optimizer=optimizer, step=step, config=config,
         )
-        tune_result, _, _ = run_epoch(model, tune_loader, device)
+        tune_result, tune_records, _ = run_epoch(model, tune_loader, device)
         best, bad_epochs, selected, reason = advance_selection(
             tune_result, best, bad_epochs, epoch, config,
         )
         if selected:
             best_checkpoint = {
                 "format": "slice-best-v1", "identity": identity, "epoch": epoch,
-                "tune": tune_result,
+                "tune": tune_result, "tune_records": tune_records,
                 "model": {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
             }
         history.append({"epoch": epoch, "updates": step, "train": train_result,
@@ -419,6 +434,7 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
         })
         if selected:
             save_checkpoint(output / "best.pt", best_checkpoint)
+            save_tune_predictions(output, best_checkpoint)
         write_json(output / "history.json", history)
         write_json(output / "result.json", {
             "status": status, "epoch": epoch, "updates": step,
