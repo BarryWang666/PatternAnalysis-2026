@@ -998,6 +998,33 @@ No performance gain or completed epoch count is established by submission.
 Promising individual changes should be confirmed before combining them, and
 three-seed stability remains required before claiming a robust recipe.
 
+### Evaluate the first four controlled optimization fits
+
+All four jobs completed on A100 GPUs. Each row describes the single checkpoint
+selected by complete TUNE slice accuracy, with NLL breaking exact ties; metrics
+from different epochs are not combined.
+
+| Experiment | Job | Terminal / selected epoch | TUNE accuracy | Ordinary NLL | Confidence ≥0.90 errors / FNs |
+| --- | --- | --- | --- | --- | --- |
+| GFNet-A: centered input | 695012 | 20 / 4 | 65.91% | 1.3415 | 681 / 346 |
+| GFNet-B: decay 0.05 | 695013 | 20 / 12 | 64.51% | 2.9296 | 932 / 620 |
+| GFNet-C: mild TRAIN geometry | 695014 | 30 / 23 | 69.62% | 2.3910 | 734 / 414 |
+| CNN-A: decay 0.05 | 695015 | 29 / 21 | 83.32% | 0.9516 | 362 / 176 |
+
+Mild geometry improves GFNet by 4.48 percentage points over the matching
+65.14% baseline, but increases ordinary NLL and confident errors. Centering
+has little accuracy benefit; higher decay does not improve either model.
+These findings suggest that invariance helps GFNet, while overconfidence
+remains unresolved. They do not establish that the Fourier implementation is
+incorrect or that a particular architectural change will solve generalization.
+
+The next development round therefore retains CNN's decay-0.01 recipe and
+checks seeds 3711 and 3712 against the existing 84.41% seed-3710 result. GFNet
+uses the mild-geometry recipe as its comparison: one experiment changes the
+input feature extractor, and another independently smooths training labels.
+Every result remains TUNE development evidence; final TEST performance and
+three-seed robustness cannot be inferred from the best individual score.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
