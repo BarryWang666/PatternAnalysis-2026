@@ -1400,6 +1400,78 @@ The independent jobs can start in scheduler order. Their later trajectories
 will determine whether hierarchy improves generalization and confident
 errors. Submission itself supplies no evidence that the 80% target is met.
 
+### Hierarchy did not resolve the generalization gap
+
+All four P1--P4 jobs completed with exit 0 and normal accuracy-patience stops.
+The selected checkpoints give the following results over all 2,860 TUNE slices:
+
+| Fit | Selected / terminal epoch | Slice accuracy | NLL | AD recall | Confident errors / FNs |
+| --- | --- | --- | --- | --- | --- |
+| P1: 2/2/2, LR 3e-4 | 14 / 22 | 73.01% | 2.0468 | 55.83% | 624 / 493 |
+| P2: 2/2/2, LR 1e-4 | 2 / 20 | 72.90% | 0.5658 | 78.56% | 0 / 0 |
+| P3: 2/2/4, LR 3e-4 | 14 / 22 | 74.02% | 2.2614 | 62.27% | 642 / 443 |
+| P4: 2/2/4, LR 1e-4 | 12 / 20 | 73.46% | 1.2533 | 53.79% | 493 / 425 |
+
+None exceeds the flat six-block G model's 75.80%. P2's zero confident errors
+apply to only 31 predictions above the 0.90 threshold, 1.08% of TUNE; this
+does not establish useful error detection or calibration. Final online TRAIN
+accuracy reaches 96.64--99.84%, while final TUNE accuracy is 66.64--71.78%.
+For P3, TUNE NLL rises to 4.3301 and wrong-prediction confidence to 97.37%.
+These trajectories support a persistent generalization/overconfidence problem.
+Online training includes augmentation and changing weights, so its accuracy
+is not a strictly matched evaluation of the training population.
+
+The broader twenty-fit development record gives the strongest support to
+local feature extraction: mild geometry raised the original GFNet from
+65.14% to 69.62%, and the convolutional stem raised it to 74.86%. Reducing
+twelve blocks to six then reached 75.80%. Increasing decay to 0.05, applying
+label smoothing, lowering LR and introducing this hierarchy did not provide
+a consistent accuracy/reliability improvement. This is a reason to retain G
+as the next reference rather than continue increasing architectural complexity.
+The hierarchy changes several components together, so its results do not
+identify a unique cause or demonstrate a defect in the spatial FFT.
+
+### Test interpolation regularization with matched slice controls
+
+The next hypothesis concerns memorization under hard-label training. MixUp
+interpolates two TRAIN images and their corresponding labels using the same
+coefficient. Its original study motivates smoother behavior between examples;
+subsequent work studies calibration benefits. Those results motivate an
+experiment, not a promise of improvement on medical slices. The teacher's
+GFNet training reference also includes MixUp/CutMix, whereas these compact
+baseline fits have used neither. Start with MixUp alone at alpha 0.2, a
+moderate unvalidated choice, so that its effect can be interpreted without
+simultaneously introducing CutMix, a new architecture or intensity processing.
+
+| Planned fit | Model / seed | Intervention | Matched comparison |
+| --- | --- | --- | --- |
+| M1 | Convolutional GFNet, six blocks / 3710 | MixUp alpha 0.2 | Saved G / 3710 |
+| M2 | Same GFNet / 3711 | No MixUp | Second-seed control for G |
+| M3 | Same GFNet / 3711 | MixUp alpha 0.2 | M2, same seed |
+| M4 | Existing CNN / 3711 | MixUp alpha 0.2 | Saved CNN / 3711 |
+
+CNN's saved three-seed TUNE accuracies are 84.41%, 81.15% and 82.80%, but
+their selected models still make 245, 344 and 342 confident errors. Choosing
+3711 for this first intervention targets its weakest observed development
+seed; success there cannot substitute for subsequent three-seed confirmation.
+
+Keep LR 3e-4, decay 0.01, batch 64, [0,1] inputs, all TRAIN slices per epoch,
+the fixed patient-disjoint manifest, thirty maximum epochs, two warmup epochs,
+minimum twenty and accuracy patience eight. GFNet retains mild geometry;
+CNN retains its existing no-geometry setting. Label smoothing is zero.
+MixUp changes the training objective only: unmodified TUNE slices and genuine
+labels still select by correct count, with ordinary NLL breaking ties.
+The 80% criterion retains all slices in its denominator. Confidence metrics
+must include high-confidence coverage as well as errors/FNs, so merely making
+the model less confident cannot be mistaken for better error identification.
+
+The two GFNet seeds provide paired evidence before another recipe is expanded
+to seed 3712. A failure to improve them should prompt a focused error/component
+investigation, rather than an open-ended MixUp grid. Calibration cannot repair
+raw accuracy because positive temperature scaling leaves argmax unchanged.
+All development results remain TUNE results; repeated TUNE searches and the
+previous exposure of this cohort's TEST population limit final interpretation.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
@@ -1417,3 +1489,8 @@ job; writing or simplifying code does not reproduce those experiments.
   [Paper](https://arxiv.org/abs/1711.05101).
 - Guo et al., *On Calibration of Modern Neural Networks*, ICML 2017.
   [Paper](https://proceedings.mlr.press/v70/guo17a.html).
+- Zhang et al., *mixup: Beyond Empirical Risk Minimization*, ICLR 2018.
+  [Paper](https://arxiv.org/abs/1710.09412).
+- Thulasidasan et al., *On Mixup Training: Improved Calibration and Predictive
+  Uncertainty for Deep Neural Networks*, NeurIPS 2019.
+  [Paper](https://arxiv.org/abs/1905.11001).
