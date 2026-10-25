@@ -1100,6 +1100,41 @@ observations, not completed results. CNN repeats will test development-set
 seed stability; GFNet variants will test the two hypotheses, without assuming
 that either reaches 80% or fixes confidence reliability.
 
+### Distinguish generalization gains from increasing confidence
+
+The four follow-up jobs completed on A100s with normal accuracy-patience
+termination. Each row uses the same selected checkpoint for all its metrics.
+
+| Experiment | Job | Terminal / selected epoch | Correct / 2,860 | TUNE accuracy | Ordinary NLL | Confidence ≥0.90 errors / FNs |
+| --- | --- | --- | --- | --- | --- | --- |
+| CNN seed 3711 | 695228 | 26 / 18 | 2321 | 81.15% | 0.7542 | 344 / 144 |
+| CNN seed 3712 | 695229 | 24 / 16 | 2368 | 82.80% | 0.8817 | 342 / 193 |
+| GFNet-D: convolutional stem | 695230 | 27 / 19 | 2141 | 74.86% | 1.8350 | 654 / 460 |
+| GFNet-E: label smoothing | 695231 | 25 / 17 | 1983 | 69.34% | 0.8991 | 635 / 422 |
+
+CNN's fixed recipe now exceeds 80% for seeds 3710–3712 on TUNE (84.41%,
+81.15%, 82.80%; mean 82.79%). This supports seed consistency within this
+split, while confident errors and final TEST performance remain unresolved.
+It is reasonable to preserve this baseline while focusing the next fits on
+GFNet rather than changing both models again without a specific hypothesis.
+
+Convolutional embedding improves GFNet by 5.24 percentage points over the
+mild-geometry patch model, supporting the usefulness of local features in
+this run. However, epoch 11 already classifies 2131 slices correctly (74.51%)
+with NLL 1.3205 and 327 confident false negatives. Selected epoch 19 adds
+only ten correct slices, with NLL 1.8350 and 460 confident false negatives.
+Final online TRAIN accuracy reaches 99.91%. More fitting is therefore not
+sufficient evidence of better generalization or more trustworthy confidence.
+
+Smoothing lowers the patch model's NLL from 2.3910 to 0.8991 but leaves its
+accuracy near 69%. Its interaction with the convolutional stem remains
+unknown. The next comparison asks whether retaining the local features but
+reducing the Fourier/MLP capacity, smoothing the targets, or lowering LR can
+improve this trade-off. Accepted selections above remain unchanged; trajectory
+comparisons motivate new experiments rather than retrospectively replacing
+checkpoints. GFNet still needs 147 additional correct TUNE slices to reach
+80%, and any promising recipe will require further seeds before final use.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
