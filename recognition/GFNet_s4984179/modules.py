@@ -159,16 +159,20 @@ class DropPath(nn.Module):
 class GFNetBlock(nn.Module):
     """GFNet's norm/filter/norm/MLP branch with one residual connection."""
 
-    def __init__(self, grid_size=(15, 16), dim=256, drop_path=0.0):
+    def __init__(self, grid_size=(15, 16), dim=256, drop_path=0.0, layer_scale=None):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, eps=1e-6)
         self.filter = GlobalFilter(grid_size, dim)
         self.norm2 = nn.LayerNorm(dim, eps=1e-6)
         self.mlp = MLP(dim)
         self.drop_path = DropPath(drop_path)
+        self.gamma = (nn.Parameter(torch.full((dim,), layer_scale))
+                      if layer_scale is not None else None)
 
     def forward(self, tokens):
         branch = self.mlp(self.norm2(self.filter(self.norm1(tokens))))
+        if self.gamma is not None:
+            branch = self.gamma * branch
         return tokens + self.drop_path(branch)
 
 
@@ -209,4 +213,58 @@ class GFNet(nn.Module):
         tokens = self.patch_embed(images) + self.pos_embed
         for block in self.blocks:
             tokens = block(tokens)
+        return self.head(self.norm(tokens).mean(dim=1))
+
+
+class GFNetPyramid(nn.Module):
+    """Three native rectangular stages, adapted from reference GFNetPyramid.
+
+    Source: https://github.com/shakes76/GFNet/blob/master/gfnet.py
+    Overlapping local convolutions give 60x64/64, 30x32/128 and 15x16/256
+    features. Fourier processing precedes the next downsampling operation.
+    Three stages retain the native canvas without a fourth odd-height merge.
+    LayerScale starts at .001 as in the reference Pyramid constructor.
+    """
+
+    def __init__(self, stage_depths=(2, 2, 2)):
+        super().__init__()
+        if (len(stage_depths) != 3
+                or any(not isinstance(depth, int) or depth < 1 for depth in stage_depths)):
+            raise ValueError("Pyramid needs three positive stage depths")
+        self.grid_sizes = ((60, 64), (30, 32), (15, 16))
+        self.dims = (64, 128, 256)
+        local = [nn.Sequential(
+            nn.Conv2d(incoming, outgoing, 3, stride=2, padding=1, bias=False),
+            nn.GroupNorm(8, outgoing), nn.GELU(),
+        ) for incoming, outgoing in zip((1, 32, 64, 128), (32, 64, 128, 256))]
+        self.stem = nn.Sequential(*local[:2])
+        self.downsamples = nn.ModuleList(local[2:])
+        self.pos_embed = nn.Parameter(torch.zeros(1, 60 * 64, 64))
+        self.stages = nn.ModuleList()
+        cursor, total = 0, sum(stage_depths)
+        for grid, dim, depth in zip(self.grid_sizes, self.dims, stage_depths):
+            self.stages.append(nn.Sequential(*[
+                GFNetBlock(grid, dim, (cursor + index) * .1 / max(1, total - 1),
+                           layer_scale=.001)
+                for index in range(depth)
+            ]))
+            cursor += depth
+        self.norm = nn.LayerNorm(256, eps=1e-6)
+        self.head = nn.Linear(256, 2)
+        nn.init.trunc_normal_(self.pos_embed, std=.02)
+        self.apply(GFNet._init_weights)
+
+    def forward(self, images):
+        if images.ndim != 4 or tuple(images.shape[1:]) != (1, 240, 256):
+            raise ValueError("Expected slices shaped [B,1,240,256]")
+        features = self.stem(images)
+        for index, (grid, dim, blocks) in enumerate(
+                zip(self.grid_sizes, self.dims, self.stages)):
+            if index:
+                features = self.downsamples[index - 1](features)
+            tokens = features.flatten(2).transpose(1, 2)
+            if index == 0:
+                tokens = tokens + self.pos_embed
+            tokens = blocks(tokens)
+            features = tokens.transpose(1, 2).reshape(images.shape[0], dim, *grid)
         return self.head(self.norm(tokens).mean(dim=1))

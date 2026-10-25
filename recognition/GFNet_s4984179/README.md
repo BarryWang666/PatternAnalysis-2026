@@ -1257,6 +1257,44 @@ CNN's three-seed TUNE recipe is retained while its confident errors and final
 TEST performance remain unresolved. The known prior TEST exposure also remains
 a limitation of this reused cohort, regardless of newly initialized weights.
 
+### Process fine spatial structure before hierarchical downsampling
+
+The new `GFNetPyramid` is a compact three-stage adaptation of the reference
+GFNetPyramid. The original uses four stages; this version retains native
+240x256 grayscale images and stops at a 15x16 grid, avoiding a fourth
+512-channel stage and an odd-height merge. It reuses the overlapping 3x3,
+stride-two convolution/GroupNorm/GELU components. Two convolutions create a
+60x64 grid, Fourier processing follows, and subsequent convolutions and
+Fourier stages produce 30x32 and 15x16 grids.
+
+| Stage | Spatial grid | Width | Compact / extended block counts |
+| --- | --- | --- | --- |
+| Fine features | 60x64 | 64 | 2 / 2 |
+| Intermediate features | 30x32 | 128 | 2 / 2 |
+| Coarse features | 15x16 | 256 | 2 / 4 |
+
+Early widths 64/128 limit the cost of processing finer grids, while final
+width 256 retains the previous classifier scale. The two variants contain
+2,926,562 and 4,118,498 trainable parameters. Each block keeps spatial
+orthonormal FFT, explicit inverse dimensions and the existing single residual
+branch. Per-channel LayerScale starts at 0.001, following the reference
+Pyramid constructor, and DropPath increases across all stages from zero to
+0.1. The final within-image token mean produces two class logits. No operation
+combines different slices or turns patient metadata into a prediction.
+
+This changes hierarchy, width distribution and residual scaling together;
+a comparison with the flat G model evaluates the architectural package, not
+the isolated causal contribution of each component. The next controlled
+comparison varies only the final-stage depth and LR within this architecture.
+Reference: [GFNetPyramid source](https://github.com/shakes76/GFNet/blob/a0c7aefaf7109ceed284df77b415046466e5bc38/gfnet.py).
+
+Temporary local CPU checks exercised both native-size variants with two
+synthetic slices each: stage shapes, finite backward gradients through every
+Fourier filter and LayerScale, deterministic evaluation, and zero-scale
+residual identity passed. Seeded state tensors and stochastic-depth schedules
+of the existing patch12, conv12 and conv6 models matched the previous source.
+These checks used no optimizer or real images and do not establish accuracy.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
