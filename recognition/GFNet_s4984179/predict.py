@@ -24,7 +24,8 @@ def load_selected_model(checkpoint, device="cpu"):
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
     if saved.get("format") != "slice-best-v1":
         raise ValueError("Use the selected best.pt checkpoint, not latest.pt")
-    model = build_model(saved["identity"]["config"]["model"])
+    config = saved["identity"]["config"]
+    model = build_model(config["model"], config.get("gfnet_embedding", "patch"))
     model.load_state_dict(saved["model"])
     model.to(device).eval()
     metadata = {key: value for key, value in saved.items() if key != "model"}

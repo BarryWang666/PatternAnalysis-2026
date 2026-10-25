@@ -1025,6 +1025,27 @@ input feature extractor, and another independently smooths training labels.
 Every result remains TUNE development evidence; final TEST performance and
 three-seed robustness cannot be inferred from the best individual score.
 
+### Test overlapping local features before global filtering
+
+GFNet-D replaces only the non-overlapping 16x16 input projection with four
+3x3 stride-two convolutions, each followed by GroupNorm and GELU. Channels
+increase 1→32→64→128→256 while spatial sizes follow
+240x256→120x128→60x64→30x32→15x16. Padding one pixel preserves the full image
+canvas. Small overlapping kernels let neighboring structures interact before
+Fourier mixing; this tests a local-feature hypothesis suggested by CNN's
+stronger generalization, rather than assuming an FFT defect.
+
+The final 240 tokens still have width 256, so position embeddings, twelve
+Fourier blocks, stochastic depth and the classifier remain comparable. This
+variant has 7,599,330 parameters versus 7,276,802 for the patch baseline and
+is identified explicitly as GFNet with a convolutional stem. It retains mild
+TRAIN geometry, [0,1] pixels, LR 3e-4 and decay 0.01 from GFNet-C.
+`--gfnet-embedding conv` selects the variant; the checkpoint records the
+choice and prediction reconstructs it. Older checkpoints default to patch
+embedding. Native-size CPU checks confirmed the grid, finite gradients through
+both the stem and Fourier filters, and exact prediction after saved-weight
+reload; these checks establish executability rather than accuracy improvement.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

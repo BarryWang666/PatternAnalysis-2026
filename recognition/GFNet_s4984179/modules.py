@@ -69,6 +69,31 @@ class PatchEmbed(nn.Module):
         return self.proj(images).flatten(2).transpose(1, 2)
 
 
+class ConvStem(nn.Module):
+    """Learn overlapping local features before the 15x16 Fourier token grid.
+
+    Four padded 3x3 stride-two convolutions preserve the native rectangular
+    canvas through 120x128, 60x64, 30x32 and 15x16 feature maps.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.grid_size = (15, 16)
+        self.num_patches = 240
+        layers = []
+        for incoming, outgoing in zip((1, 32, 64, 128), (32, 64, 128, 256)):
+            layers.extend((
+                nn.Conv2d(incoming, outgoing, 3, stride=2, padding=1, bias=False),
+                nn.GroupNorm(8, outgoing), nn.GELU(),
+            ))
+        self.layers = nn.Sequential(*layers)
+
+    def forward(self, images):
+        if images.ndim != 4 or tuple(images.shape[1:]) != (1, 240, 256):
+            raise ValueError("Expected slices shaped [B,1,240,256]")
+        return self.layers(images).flatten(2).transpose(1, 2)
+
+
 class GlobalFilter(nn.Module):
     """Learn a complex frequency filter on an explicit rectangular token grid.
 
@@ -154,9 +179,11 @@ class GFNet(nn.Module):
     head return raw NC/AD logits [B,2]; evaluation disables stochastic depth.
     """
 
-    def __init__(self):
+    def __init__(self, embedding="patch"):
         super().__init__()
-        self.patch_embed = PatchEmbed()
+        if embedding not in ("patch", "conv"):
+            raise ValueError("Choose patch or conv embedding")
+        self.patch_embed = PatchEmbed() if embedding == "patch" else ConvStem()
         self.pos_embed = nn.Parameter(torch.zeros(1, 240, 256))
         self.blocks = nn.ModuleList(
             GFNetBlock(self.patch_embed.grid_size, 256, i * 0.1 / 11)

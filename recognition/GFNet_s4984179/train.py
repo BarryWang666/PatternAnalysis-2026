@@ -37,6 +37,7 @@ class Config:
     patience: int = 8
     input_scale: str = "zero_one"
     augment: bool = False
+    gfnet_embedding: str = "patch"
 
     def validate(self):
         if self.model not in ("cnn", "gfnet"):
@@ -47,6 +48,9 @@ class Config:
             raise ValueError("Weight decay must be finite and nonnegative")
         if self.input_scale not in ("zero_one", "minus_one_one"):
             raise ValueError("Choose zero_one or minus_one_one input scaling")
+        if self.gfnet_embedding not in ("patch", "conv") or (
+                self.model == "cnn" and self.gfnet_embedding != "patch"):
+            raise ValueError("Conv embedding is a GFNet-only option")
         if (not 0 <= self.seed < 2**32 or self.batch_size < 1 or self.patience < 1
                 or not 0 <= self.warmup_epochs < self.max_epochs
                 or not 1 <= self.min_epochs <= self.max_epochs):
@@ -100,8 +104,8 @@ def a100_runtime(seed):
     return torch.device("cuda:0"), runtime
 
 
-def build_model(name):
-    return {"cnn": BaselineCNN, "gfnet": GFNet}[name]()
+def build_model(name, gfnet_embedding="patch"):
+    return {"cnn": BaselineCNN, "gfnet": lambda: GFNet(embedding=gfnet_embedding)}[name]()
 
 
 def build_optimizer(model, config):
@@ -398,6 +402,7 @@ def main():
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--input-scale", choices=("zero_one", "minus_one_one"), default="zero_one")
     parser.add_argument("--augment", action="store_true", help="TRAIN-only rotation +/-5 degrees and translation +/-2%%")
+    parser.add_argument("--gfnet-embedding", choices=("patch", "conv"), default="patch")
     parser.add_argument("--epochs", type=int, help="Additional complete epochs this invocation; keep the global LR horizon")
     parser.add_argument("--resume", action="store_true", help="Continue this output directory's latest.pt")
     args = parser.parse_args()
@@ -413,7 +418,7 @@ def main():
     device, runtime = a100_runtime(config.seed)
     print(json.dumps({"train_slices": len(train_data), "tune_slices": len(tune_data),
                       "config": asdict(config), "runtime": runtime}), flush=True)
-    fit(build_model(config.model), train_data, tune_data, config, output,
+    fit(build_model(config.model, config.gfnet_embedding), train_data, tune_data, config, output,
         file_digest(args.manifest), device, runtime, resume=args.resume, epochs=args.epochs)
 
 
