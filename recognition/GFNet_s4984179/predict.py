@@ -7,7 +7,9 @@ Metrics operate on slices; patient IDs are metadata rather than predictions.
 
 import argparse
 import json
+import math
 from pathlib import Path
+import time
 import numpy as np
 import torch
 
@@ -165,6 +167,104 @@ def reliability_report(records, n_bins=10):
                      "accuracy": accuracy, "confidence": mean_confidence})
     result.update(ece=float(ece), reliability_bins=bins)
     return result
+
+
+def scale_confidence(records, temperature):
+    """Return per-slice probabilities from margins/T, preserving raw margins."""
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError("Temperature must be finite and positive")
+    records = list(records)
+    margins = np.asarray([row["margin"] for row in records]) / temperature
+    return [{**row, "raw_margin": row["margin"], "margin": float(margin),
+             "prediction": int(margin >= 0), "probability_ad": float(probability),
+             "confidence": float(confidence)}
+            for row, margin, probability, confidence in zip(
+                records, margins, probabilities(margins), probabilities(np.abs(margins)))]
+
+
+def fit_calibration(records):
+    """Fit slice NLL temperature and an at-least-80% coverage threshold.
+
+    Call with CALIBRATION records only. Search log T on the fixed [.05,20]
+    interval; compare endpoints and T=1. Retain complete score ties. The
+    absolute scaled margin is the operative score, avoiding sigmoid saturation.
+    """
+    records = list(records)
+    labels = np.asarray([row["label"] for row in records])
+    margins = np.asarray([row["margin"] for row in records], dtype=np.float64)
+    raw = slice_metrics(labels, margins)
+
+    def nll(temperature):
+        z = margins / temperature
+        return float(np.mean(np.logaddexp(0, z) - labels * z))
+
+    lower, upper = math.log(.05), math.log(20)
+    fraction = (math.sqrt(5) - 1) / 2
+    left, right = upper - fraction * (upper - lower), lower + fraction * (upper - lower)
+    a, b = nll(math.exp(left)), nll(math.exp(right))
+    for _ in range(80):
+        if a <= b:
+            upper, right, b = right, left, a
+            left = upper - fraction * (upper - lower)
+            a = nll(math.exp(left))
+        else:
+            lower, left, a = left, right, b
+            right = lower + fraction * (upper - lower)
+            b = nll(math.exp(right))
+    candidates = (1.0, .05, 20.0, math.exp((lower + upper) / 2))
+    temperature = min(candidates, key=lambda value: (nll(value), abs(math.log(value))))
+    scores = np.abs(margins / temperature)
+    retain = (4 * len(records) + 4) // 5
+    threshold = float(np.sort(scores)[-retain])
+    return {"temperature": temperature, "temperature_bounds": [.05, 20.0],
+            "temperature_at_bound": temperature in (.05, 20.0),
+            "target_coverage": .8, "score_threshold": threshold,
+            "confidence_threshold": float(probabilities(threshold)),
+            "calibration_n": len(records), "calibration_coverage": float(np.mean(scores >= threshold)),
+            "raw_nll": raw["nll"], "calibrated_nll": nll(temperature)}
+
+
+def selective_report(records, score_threshold):
+    """Apply a fixed absolute-margin threshold; do not refit on evaluation."""
+    records = list(records)
+    labels = np.asarray([row["label"] for row in records])
+    margins = np.asarray([row["margin"] for row in records])
+    accepted = np.abs(margins) >= score_threshold
+    wrong = (margins >= 0) != labels
+    n = int(accepted.sum())
+    errors = int((accepted & wrong).sum())
+    false_negatives = int((accepted & (labels == 1) & (margins < 0)).sum())
+    return {"n": len(records), "accepted": n, "rejected": len(records) - n,
+            "coverage": n / len(records), "errors": errors,
+            "risk": errors / n if n else None, "accuracy": 1 - errors / n if n else None,
+            "retained_false_negatives": false_negatives,
+            "retained_fn_fraction_of_all_ad": false_negatives / int((labels == 1).sum())
+            if (labels == 1).any() else None}
+
+
+def risk_coverage(records):
+    """Describe TEST ranking with whole score ties and common coverage targets.
+
+    These thresholds are descriptive curve coordinates, not deployed policies.
+    AURC uses right-endpoint steps over complete tied groups.
+    """
+    records = list(records)
+    scores = np.abs([row["margin"] for row in records])
+    errors = np.asarray([(row["margin"] >= 0) != row["label"] for row in records])
+    order = np.argsort(-scores, kind="stable")
+    ends = np.r_[np.flatnonzero(np.diff(scores[order])) + 1, len(records)]
+    cumulative = np.cumsum(errors[order])
+    points = [{"coverage": int(end) / len(records), "accepted": int(end),
+               "risk": int(cumulative[end - 1]) / int(end),
+               "score_threshold": float(scores[order[end - 1]])} for end in ends]
+    area, previous = 0.0, 0.0
+    for point in points:
+        area += (point["coverage"] - previous) * point["risk"]
+        previous = point["coverage"]
+    common = [{"target_coverage": target / 10, **next(
+        point for point in points if point["accepted"] * 10 >= target * len(records))}
+              for target in range(1, 11)]
+    return {"points": points, "common_coverage": common, "aurc": area}
 
 
 def plot_reliability(report, output, title="Slice confidence reliability"):

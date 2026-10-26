@@ -1773,6 +1773,22 @@ memory, so the recommendation weighs reliability, accuracy and cost.
 The existing history of cohort exposure remains a limitation: this final
 evaluation cannot restore an independently unseen test cohort.
 
+### Implement calibration and selective prediction without changing labels
+
+The slice functions in `predict.py` fit the single temperature with a bounded
+log-space golden-section search and explicitly compare T=1 and both endpoints.
+Raw records remain intact; scaled records preserve the raw margin. Rejection
+uses the stored absolute-margin threshold and keeps whole ties, so TEST
+coverage is measured rather than forced to the calibration target. Curves
+also expose achieved coverage at each common target and a tied-group step
+area under risk--coverage. They remain descriptive evaluation summaries.
+
+Seven temporary synthetic checks passed: an independent 2,001-temperature
+grid reference, boundary/flat optima, unchanged class decisions and records,
+different evaluation coverage under a fixed policy, true/saturated score
+ties, direct risk--coverage arithmetic and invalid fitting inputs. No model,
+optimizer, image or real-cohort fitting was used by these checks.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
