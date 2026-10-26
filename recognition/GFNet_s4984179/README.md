@@ -1647,6 +1647,26 @@ native-resolution inputs, including gradients to every complex filter.
 These two backward calls made no optimizer updates and opened no real images.
 They establish construction and differentiation, not expected TUNE accuracy.
 
+### Bind MLP capacity to training, resume and selected-weight inference
+
+`--gfnet-mlp-ratio 2` selects the smaller flat GFNet; the saved configuration
+and selected-weight loader carry that choice into reconstruction. Missing
+historical fields mean ratio 4. Resume rejects changing the ratio because
+the optimizer tensors and hidden weights belong to the original dimensions.
+CNN and Pyramid retain their original defaults. For example, the new
+GFNet recipe uses `--gfnet-embedding conv --gfnet-depth 6
+--gfnet-mlp-ratio 2 --augment` alongside the fixed training arguments.
+
+Three integration checks passed locally and on Rangpur CPU: CLI/configuration
+forwarding, selected-weight reconstruction for both ratios and an older
+configuration, and exact continuous/resumed optimizer/RNG state with ratio
+binding and the historical default. Each environment used sixteen tiny
+synthetic AdamW updates and three temporary selected-weight loads. The two
+native module checks also passed on Rangpur; CUDA remained uninitialized.
+The login-host driver-probe warning is preserved separately from these
+successful CPU outcomes. Actual A100 behavior of the smaller configuration
+will be measured by the final-round jobs.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

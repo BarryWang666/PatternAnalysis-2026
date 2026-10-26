@@ -26,7 +26,8 @@ def load_selected_model(checkpoint, device="cpu"):
         raise ValueError("Use the selected best.pt checkpoint, not latest.pt")
     config = saved["identity"]["config"]
     model = build_model(config["model"], config.get("gfnet_embedding", "patch"),
-                        config.get("gfnet_depth", 12), config.get("pyramid_depths", (2, 2, 2)))
+                        config.get("gfnet_depth", 12), config.get("pyramid_depths", (2, 2, 2)),
+                        config.get("gfnet_mlp_ratio", 4))
     model.load_state_dict(saved["model"])
     model.to(device).eval()
     metadata = {key: value for key, value in saved.items() if key != "model"}

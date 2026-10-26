@@ -42,6 +42,7 @@ class Config:
     gfnet_depth: int = 12
     pyramid_depths: tuple = (2, 2, 2)
     mixup_alpha: float = 0.0
+    gfnet_mlp_ratio: int = 4
 
     def validate(self):
         if self.model not in ("cnn", "gfnet", "gfnet_pyramid"):
@@ -62,6 +63,9 @@ class Config:
         if (not isinstance(self.gfnet_depth, int) or self.gfnet_depth < 1
                 or (self.model != "gfnet" and self.gfnet_depth != 12)):
             raise ValueError("Choose a positive flat-GFNet depth; other models use its default")
+        if not isinstance(self.gfnet_mlp_ratio, int) or self.gfnet_mlp_ratio not in (2, 4) or (
+                self.model != "gfnet" and self.gfnet_mlp_ratio != 4):
+            raise ValueError("MLP ratio 2 or 4 applies to flat GFNet; other models use 4")
         if (len(self.pyramid_depths) != 3
                 or any(not isinstance(depth, int) or depth < 1 for depth in self.pyramid_depths)
                 or (self.model != "gfnet_pyramid" and tuple(self.pyramid_depths) != (2, 2, 2))):
@@ -119,9 +123,11 @@ def a100_runtime(seed):
     return torch.device("cuda:0"), runtime
 
 
-def build_model(name, gfnet_embedding="patch", gfnet_depth=12, pyramid_depths=(2, 2, 2)):
+def build_model(name, gfnet_embedding="patch", gfnet_depth=12, pyramid_depths=(2, 2, 2),
+                gfnet_mlp_ratio=4):
     return {"cnn": BaselineCNN,
-            "gfnet": lambda: GFNet(embedding=gfnet_embedding, depth=gfnet_depth),
+            "gfnet": lambda: GFNet(embedding=gfnet_embedding, depth=gfnet_depth,
+                                   mlp_ratio=gfnet_mlp_ratio),
             "gfnet_pyramid": lambda: GFNetPyramid(stage_depths=pyramid_depths)}[name]()
 
 
@@ -372,7 +378,8 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
     saved = None
     if resume:
         saved = torch.load(output / "latest.pt", map_location="cpu", weights_only=True)
-        previous_config = {"mixup_alpha": 0.0, **saved["identity"]["config"]}
+        previous_config = {"mixup_alpha": 0.0, "gfnet_mlp_ratio": 4,
+                           **saved["identity"]["config"]}
         if (saved["format"] != "slice-latest-v1"
                 or previous_config != asdict(config)
                 or saved["identity"]["manifest_sha256"] != manifest_sha256):
@@ -475,6 +482,8 @@ def main():
     parser.add_argument("--mixup-alpha", type=float, default=0.0,
                         help="TRAIN-only batch MixUp Beta parameter; zero disables mixing")
     parser.add_argument("--gfnet-depth", type=int, default=12)
+    parser.add_argument("--gfnet-mlp-ratio", type=int, choices=(2, 4), default=4,
+                        help="Flat GFNet channel expansion; historical checkpoints use 4")
     parser.add_argument("--pyramid-depths", type=int, nargs=3, default=(2, 2, 2),
                         metavar=("FINE", "MIDDLE", "COARSE"),
                         help="Fourier block counts at 60x64, 30x32 and 15x16")
@@ -495,7 +504,8 @@ def main():
     device, runtime = a100_runtime(config.seed)
     print(json.dumps({"train_slices": len(train_data), "tune_slices": len(tune_data),
                       "config": asdict(config), "runtime": runtime}), flush=True)
-    fit(build_model(config.model, config.gfnet_embedding, config.gfnet_depth, config.pyramid_depths),
+    fit(build_model(config.model, config.gfnet_embedding, config.gfnet_depth,
+                    config.pyramid_depths, config.gfnet_mlp_ratio),
         train_data, tune_data, config, output,
         file_digest(args.manifest), device, runtime, resume=args.resume, epochs=args.epochs)
 

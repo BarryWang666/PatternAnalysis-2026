@@ -190,7 +190,7 @@ class GFNet(nn.Module):
             raise ValueError("Choose patch or conv embedding")
         if not isinstance(depth, int) or depth < 1:
             raise ValueError("GFNet depth must be a positive integer")
-        if mlp_ratio not in (2, 4):
+        if not isinstance(mlp_ratio, int) or mlp_ratio not in (2, 4):
             raise ValueError("Choose MLP expansion ratio 2 or 4")
         self.patch_embed = PatchEmbed() if embedding == "patch" else ConvStem()
         self.pos_embed = nn.Parameter(torch.zeros(1, 240, 256))
