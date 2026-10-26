@@ -126,13 +126,13 @@ class GlobalFilter(nn.Module):
 
 
 class MLP(nn.Module):
-    """Expand and contract each token's feature width with GELU."""
+    """Expand each token by the declared ratio, then contract with GELU."""
 
-    def __init__(self, dim=256):
+    def __init__(self, dim=256, ratio=4):
         super().__init__()
-        self.fc1 = nn.Linear(dim, 4 * dim)
+        self.fc1 = nn.Linear(dim, ratio * dim)
         self.act = nn.GELU()
-        self.fc2 = nn.Linear(4 * dim, dim)
+        self.fc2 = nn.Linear(ratio * dim, dim)
 
     def forward(self, tokens):
         return self.fc2(self.act(self.fc1(tokens)))
@@ -159,12 +159,13 @@ class DropPath(nn.Module):
 class GFNetBlock(nn.Module):
     """GFNet's norm/filter/norm/MLP branch with one residual connection."""
 
-    def __init__(self, grid_size=(15, 16), dim=256, drop_path=0.0, layer_scale=None):
+    def __init__(self, grid_size=(15, 16), dim=256, drop_path=0.0, layer_scale=None,
+                 mlp_ratio=4):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, eps=1e-6)
         self.filter = GlobalFilter(grid_size, dim)
         self.norm2 = nn.LayerNorm(dim, eps=1e-6)
-        self.mlp = MLP(dim)
+        self.mlp = MLP(dim, mlp_ratio)
         self.drop_path = DropPath(drop_path)
         self.gamma = (nn.Parameter(torch.full((dim,), layer_scale))
                       if layer_scale is not None else None)
@@ -183,16 +184,19 @@ class GFNet(nn.Module):
     head return raw NC/AD logits [B,2]; evaluation disables stochastic depth.
     """
 
-    def __init__(self, embedding="patch", depth=12):
+    def __init__(self, embedding="patch", depth=12, mlp_ratio=4):
         super().__init__()
         if embedding not in ("patch", "conv"):
             raise ValueError("Choose patch or conv embedding")
         if not isinstance(depth, int) or depth < 1:
             raise ValueError("GFNet depth must be a positive integer")
+        if mlp_ratio not in (2, 4):
+            raise ValueError("Choose MLP expansion ratio 2 or 4")
         self.patch_embed = PatchEmbed() if embedding == "patch" else ConvStem()
         self.pos_embed = nn.Parameter(torch.zeros(1, 240, 256))
         self.blocks = nn.ModuleList(
-            GFNetBlock(self.patch_embed.grid_size, 256, i * 0.1 / max(1, depth - 1))
+            GFNetBlock(self.patch_embed.grid_size, 256, i * 0.1 / max(1, depth - 1),
+                       mlp_ratio=mlp_ratio)
             for i in range(depth)
         )
         self.norm = nn.LayerNorm(256, eps=1e-6)

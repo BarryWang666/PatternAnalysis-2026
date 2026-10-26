@@ -1629,6 +1629,24 @@ the final TEST evaluation. No further training search is planned. Achieving
 All current comparisons are TUNE results, with the previously stated cohort
 exposure and repeated-development limitations.
 
+### Reduce the channel MLP while retaining the Fourier comparison
+
+The flat GFNet now accepts MLP expansion ratio 2 or 4. Ratio 2 changes only
+the channel branch from 256-to-1024-to-256 to 256-to-512-to-256. The six
+complex global filters, positional grid, convolutional stem, normalization,
+DropPath schedule and two-class head remain the same. Parameters decrease
+from 4,025,058 to 2,449,122; MLP parameters account for the whole reduction.
+The reference GFNet exposes this ratio as well, so the experiment retains
+the defining global frequency filtering rather than replacing it with a CNN.
+
+Two temporary CPU checks passed. At the default ratio 4, initialized state
+tensors and final construction RNG match the preceding implementation for
+CNN, patch GFNet, convolutional GFNet and Pyramid. Both ratio-2 and ratio-4
+six-block models produced finite [2,2] logits and gradients on synthetic
+native-resolution inputs, including gradients to every complex filter.
+These two backward calls made no optimizer updates and opened no real images.
+They establish construction and differentiation, not expected TUNE accuracy.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
