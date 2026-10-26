@@ -1710,6 +1710,69 @@ Completed G/3710, M2/3711 and M4/3711 are reused rather than retrained. After
 the six jobs finish, the predeclared three-seed comparison determines the
 common recipe for each model before the single final evaluation stage.
 
+### Close development and freeze the final six selected models
+
+All six N1--N6 jobs completed with exit 0, zero restarts and normal accuracy
+patience. Saved selected records, complete histories and source/configuration
+identities agree. Actual allocations were A100-PCIE-40GB on a100-9/comp3710
+or a100-5/a100, using two intra-op/two inter-op threads.
+
+| Recipe | Seed 3710 accuracy | Seed 3711 accuracy | Seed 3712 accuracy | Mean accuracy | Mean NLL |
+| --- | --- | --- | --- | --- | --- |
+| CNN, unmixed | 84.41% | 81.15% | 82.80% | 82.79% | 0.7242 |
+| CNN, MixUp 0.2 | 82.03% | 83.22% | 82.38% | 82.54% | 0.4257 |
+| GFNet, MLP ratio 4 | 75.80% | 74.30% | 75.63% | 75.24% | 1.5748 |
+| GFNet, MLP ratio 2 | 74.06% | 74.41% | 74.16% | 74.21% | 2.3100 |
+
+These are full-population TUNE slice results. CNN MixUp improves NLL and
+the weakest seed, but loses 21 correct predictions across the three seed
+evaluations. The predeclared accuracy-first rule therefore retains the
+unmixed CNN. Its reliability trade-off must stay visible rather than changing
+the selection criterion after seeing the results. Shrinking the GFNet MLP
+reduces parameters without improving generalization, so retain ratio 4.
+GFNet's 80% development goal remains unmet; completing the jobs is not
+equivalent to satisfying that target.
+
+Final checkpoints are CNN seeds 3710/3711/3712 at epochs 14/18/16, and
+six-block convolutional GFNet seeds 3710/3711/3712 at epochs 7/13/19.
+No weights are averaged and no seed-specific recipes are substituted.
+The last round adds 145 complete epochs and 42,050 updates; previous fits
+are reused. No further training search is planned.
+
+### Specify the single final slice evaluation before reading its outcomes
+
+For each fixed checkpoint, predict all 3,180 CALIBRATION slices, fit one
+positive temperature by slice NLL, then predict all 5,920 TEST slices once.
+Use a fixed temperature range 0.05--20 with endpoint checks; report a boundary
+solution rather than expanding the range after observing TEST. Positive
+temperature changes confidence, not the class decision or official accuracy.
+Report both raw and calibrated reliability, keeping the full TEST denominator.
+
+Choose each model/seed's rejection threshold solely on CALIBRATION to retain
+at least 80% of slices, accepting the entire tied score group. Store the
+absolute scaled logit threshold as well as its displayed confidence, avoiding
+saturated probabilities turning different scores into artificial ties.
+Apply that fixed threshold to TEST and report actual coverage, selective risk
+and retained false negatives. Descriptive TEST risk--coverage curves compare
+error ranking at common coverages; they do not retune the operating threshold.
+
+Statistical uncertainty uses 2,000 paired, diagnosis-stratified patient
+bootstrap draws with seed 9001. Patient IDs keep correlated slices together;
+all reported predictions and accuracies remain individual-slice quantities.
+Report each seed, means and GFNet-minus-CNN intervals. These intervals are
+conditional on the selected fits, calibration and observed cohort; they do
+not include retraining or external-site uncertainty.
+
+Five deterministic error-case slots use seed 3710 for paired predictions:
+GFNet confident false negative, CNN confident false negative, GFNet-only
+error, CNN-only error and a wrong prediction near the GFNet decision boundary.
+Use distinct patients where available and show other seeds as context.
+Prediction ambiguity is not a clinical annotation of diagnostic ambiguity.
+Record parameter counts, saved training costs, measured inference time and
+memory, so the recommendation weighs reliability, accuracy and cost.
+The existing history of cohort exposure remains a limitation: this final
+evaluation cannot restore an independently unseen test cohort.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
