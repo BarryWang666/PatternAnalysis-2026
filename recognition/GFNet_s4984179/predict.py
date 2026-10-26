@@ -288,6 +288,130 @@ def risk_coverage(records):
     return {"points": points, "common_coverage": common, "aurc": area}
 
 
+def paired_bootstrap(results, replicates=2000, seed=9001):
+    """Paired diagnosis-stratified patient resampling of slice metrics.
+
+    Every sampled patient contributes all slices, with multiplicity. Shared
+    draws compare both models/seeds; fitted models and calibration stay fixed.
+    Undefined replicates invalidate an interval rather than being dropped.
+    """
+    results = sorted(results, key=lambda item: (item["model"], item["seed"]))
+    populations = [sorted(item["records"], key=lambda row: row["path"]) for item in results]
+    reference = [(row["path"], row["subject_id"], row["label"]) for row in populations[0]]
+    if any([(r["path"], r["subject_id"], r["label"]) for r in rows] != reference
+           for rows in populations):
+        raise ValueError("Paired intervals require identical slice/subject/label joins")
+    keys = [(item["model"], item["seed"]) for item in results]
+    seeds = sorted({key[1] for key in keys})
+    if len(set(keys)) != len(keys) or set(keys) != {(m, s) for m in ("cnn", "gfnet") for s in seeds}:
+        raise ValueError("Need matching CNN/GFNet seeds without duplicates")
+    labels = np.asarray([row[2] for row in reference])
+    patients, group = np.unique([row[1] for row in reference], return_inverse=True)
+    diagnosis = np.asarray([labels[group == i][0] for i in range(len(patients))])
+    if not np.array_equal(labels, diagnosis[group]):
+        raise ValueError("Patient diagnosis must be consistent for stratification")
+    weights = np.zeros((replicates + 1, len(patients)))
+    weights[0] = 1
+    rng = np.random.Generator(np.random.PCG64(seed))
+    for label in (0, 1):
+        members = np.flatnonzero(diagnosis == label)
+        draws = rng.choice(members, size=(replicates, len(members)), replace=True)
+        np.add.at(weights, (np.arange(1, replicates + 1)[:, None], draws), 1)
+
+    def total(values):
+        patient_total = np.bincount(group, weights=np.asarray(values, dtype=float), minlength=len(patients))
+        return np.einsum("ij,j->i", weights, patient_total, optimize=False)
+
+    def ratio(a, b):
+        return np.divide(a, b, out=np.full_like(a, np.nan), where=b > 0)
+
+    count, ad_count = total(np.ones(len(labels))), total(labels == 1)
+    series = {}
+    for item, rows, key in zip(results, populations, keys):
+        z = np.asarray([row["margin"] for row in rows])
+        wrong = (z >= 0) != labels
+        scaled = z / item["policy"]["temperature"]
+        keep = np.abs(scaled) >= item["policy"]["score_threshold"]
+        metrics = {"accuracy": total(~wrong) / count,
+                   "coverage": total(keep) / count,
+                   "selective_risk": ratio(total(keep & wrong), total(keep)),
+                   "retained_fn_fraction_of_all_ad": ratio(total(keep & (labels == 1) & (z < 0)), ad_count)}
+        for prefix, margins in (("raw", z), ("calibrated", scaled)):
+            probability = probabilities(margins)
+            confidence = probabilities(np.abs(margins))
+            high = confidence >= .9
+            metrics[prefix + "_nll"] = total(np.logaddexp(0, margins) - labels * margins) / count
+            metrics[prefix + "_brier"] = total((probability - labels) ** 2) / count
+            metrics[prefix + "_hc_error_rate"] = ratio(total(high & wrong), total(high))
+            deviation = np.zeros(replicates + 1)
+            edges = np.linspace(.5, 1, 11)
+            for lower, upper in zip(edges[:-1], edges[1:]):
+                inside = (confidence >= lower) & ((confidence <= upper) if upper == 1 else (confidence < upper))
+                deviation += np.abs(total(inside & ~wrong) - total(inside * confidence))
+            metrics[prefix + "_ece"] = deviation / count
+        series[key] = metrics
+
+    def summarize(metrics):
+        output = {}
+        for name, values in metrics.items():
+            valid = int(np.isfinite(values[1:]).sum())
+            output[name] = {"point": float(values[0]) if np.isfinite(values[0]) else None,
+                            "ci95": np.percentile(values[1:], [2.5, 97.5]).tolist() if valid == replicates else None,
+                            "valid_replicates": valid}
+        return output
+
+    means = {model: {name: np.mean([series[model, s][name] for s in seeds], axis=0)
+                     for name in next(iter(series.values()))} for model in ("cnn", "gfnet")}
+    differences = {str(s): summarize({name: series["gfnet", s][name] - series["cnn", s][name]
+                                     for name in means["cnn"]}) for s in seeds}
+    differences["mean"] = summarize({name: means["gfnet"][name] - means["cnn"][name]
+                                     for name in means["cnn"]})
+    return {"replicates": replicates, "seed": seed, "patients": len(patients), "slices": len(labels),
+            "sampling": "paired diagnosis-stratified patient clusters; all slice multiplicities retained",
+            "per_seed": {f"{m}-{s}": summarize(value) for (m, s), value in series.items()},
+            "means": {model: summarize(value) for model, value in means.items()},
+            "gfnet_minus_cnn": differences}
+
+
+def failure_cases(results):
+    """Five fixed seed-3710 error slots, with separate predictions for all seeds."""
+    views = {(item["model"], item["seed"]): {r["path"]: r for r in item["records"]} for item in results}
+    policies = {(item["model"], item["seed"]): item["policy"] for item in results}
+    cnn, gfnet = views["cnn", 3710], views["gfnet", 3710]
+    paths = sorted(cnn)
+    wrong = lambda row: (row["margin"] >= 0) != row["label"]
+    slots = [
+        ("GFNet confident false negative", lambda p: gfnet[p]["label"] == 1 and gfnet[p]["margin"] <= -math.log(9), lambda p: -abs(gfnet[p]["margin"])),
+        ("CNN confident false negative", lambda p: cnn[p]["label"] == 1 and cnn[p]["margin"] <= -math.log(9), lambda p: -abs(cnn[p]["margin"])),
+        ("GFNet-only error", lambda p: wrong(gfnet[p]) and not wrong(cnn[p]), lambda p: -abs(gfnet[p]["margin"])),
+        ("CNN-only error", lambda p: wrong(cnn[p]) and not wrong(gfnet[p]), lambda p: -abs(cnn[p]["margin"])),
+        ("GFNet wrong near boundary", lambda p: wrong(gfnet[p]), lambda p: abs(gfnet[p]["margin"])),
+    ]
+    selected, used = [], set()
+    for name, eligible, rank in slots:
+        available = [p for p in paths if gfnet[p]["subject_id"] not in used]
+        candidates = sorted((p for p in available if eligible(p)), key=lambda p: (rank(p), p))
+        fallback = not candidates
+        if fallback:
+            candidates = sorted((p for p in available if wrong(gfnet[p]) or wrong(cnn[p])),
+                                key=lambda p: (-abs(gfnet[p]["margin"]), p))
+        if not candidates:
+            continue
+        path = candidates[0]
+        used.add(gfnet[path]["subject_id"])
+        predictions = {}
+        for key, records in views.items():
+            row = records[path]
+            predictions[f"{key[0]}-{key[1]}"] = {
+                "prediction": int(row["margin"] >= 0), "margin": row["margin"],
+                "raw_confidence": float(probabilities(abs(row["margin"]))),
+                "calibrated_confidence": float(probabilities(abs(row["margin"]) / policies[key]["temperature"]))}
+        selected.append({"slot": name, "used_fallback": fallback, "path": path,
+                         "subject_id": gfnet[path]["subject_id"], "label": gfnet[path]["label"],
+                         "predictions": predictions})
+    return selected
+
+
 def plot_reliability(report, output, title="Slice confidence reliability"):
     """Plot existing bin statistics and slice counts without rerunning inference."""
     import matplotlib.pyplot as plt

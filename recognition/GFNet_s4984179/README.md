@@ -1815,6 +1815,31 @@ behavior. Additional checks cover manifest mismatch before prediction, the
 ordinary TEST guard and single CLI delegation. No real images or optimizer
 updates were used; CUDA stayed uninitialized.
 
+### Quantify paired uncertainty and select actual slice errors
+
+The bootstrap keeps all slices and visits of every resampled patient, with
+draw multiplicity, rather than treating correlated slices as independent
+people. One PCG64(9001) draw set is shared by both models and all seeds.
+Patient-level sums make 2,000 draws efficient without constructing repeated
+image records; final denominators remain slice counts. Report intervals for
+accuracy, raw/calibrated NLL, Brier, ECE, high-confidence error rate, fixed
+coverage/risk and retained false-negative fraction. Missing denominators
+retain undefined values and invalidate an incomplete interval. Include each
+seed, model means and paired GFNet-minus-CNN differences.
+
+Error slots retain separate CNN/GFNet predictions for every seed. Seed 3710
+chooses the five prespecified categories, with path ties resolved exactly,
+distinct patients and an explicit fallback to another actual error when a
+category is empty. There is no patient prediction, seed ensemble or medical
+ambiguity label. Confidence values contextualize the wrong slice itself.
+
+Six synthetic analysis checks passed. A full 2,000-draw independent reference
+explicitly repeats patients and their slices and agrees with the compact
+implementation's points/intervals. Other checks cover shared-draw zero
+differences for identical models, input reordering, mismatched joins,
+undefined selective risk, five known error slots and fallback exclusions.
+These are arithmetic references, not findings from the real TEST population.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
