@@ -1867,6 +1867,38 @@ five synthetic case images were read for illustration. Synthetic figures
 were visually inspected outside the submission folder. Actual case panels
 will be generated only from the fixed final outputs.
 
+### Validate the final evaluation path on the target runtime
+
+Twenty focused checks passed locally and on Rangpur CPU: calibration and
+ties, genuine synthetic CALIBRATION/TEST inference, paired resampling/error
+selection, complete-population joins and saved-record figure generation.
+One additional numerical figure check passed in both environments: the
+right-endpoint step area drawn by each risk curve equals its reported AURC.
+Three harmless local orchestration checks confirm six fixed evaluations
+followed by one CPU analysis, stopping at a failed child, and a consumed
+single-submission entry. Temporary tests remain outside the submitted code.
+
+The final workflow loads the six existing selected checkpoints; it constructs
+no optimizer and performs zero neural-weight updates. Total planned inference
+is 19,080 CALIBRATION plus 35,520 TEST slice presentations. The five case
+illustrations are separate image reads and require no additional forward
+pass. Actual decode counts are not independently instrumented. One allocated
+A100 runs the six model/seed calls sequentially, followed by CPU analysis of
+their saved records. This is the agreed single final-evaluation stage.
+
+For an allocated A100, one selected model can be evaluated with:
+
+```bash
+python predict.py evaluate --checkpoint RUN/best.pt --manifest MANIFEST.csv \
+  --data-root ADNI --seed 3710 --output EVALUATION/cnn-3710
+```
+
+The saved-record analysis accepts the six model/seed `test.json` files with
+`python predict.py analyze --inputs FILE1 FILE2 FILE3 FILE4 FILE5 FILE6
+--manifest MANIFEST.csv --output EVALUATION/analysis --data-root ADNI`.
+It performs no model inference or calibration fitting. The optional image
+root enables the five case panels; numerical summaries use saved records.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

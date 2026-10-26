@@ -488,7 +488,8 @@ def plot_final_results(results, cases, output, data_root=None):
     for item in results:
         points = item["risk_coverage"]["points"]
         color = "#2563EB" if item["model"] == "cnn" else "#D97706"
-        ax.step([p["coverage"] for p in points], [p["risk"] for p in points], where="post",
+        ax.step([0] + [p["coverage"] for p in points],
+                [points[0]["risk"]] + [p["risk"] for p in points], where="pre",
                 color=color, alpha=.65, label=f"{item['model'].upper()} / {item['seed']}")
         if item["selective"]["risk"] is not None:
             ax.scatter(item["selective"]["coverage"], item["selective"]["risk"], color=color, s=35)
