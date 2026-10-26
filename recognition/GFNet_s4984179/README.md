@@ -1667,6 +1667,49 @@ The login-host driver-probe warning is preserved separately from these
 successful CPU outcomes. Actual A100 behavior of the smaller configuration
 will be measured by the final-round jobs.
 
+### Submit the final six fits with complete seed coverage
+
+The training snapshot is commit `ca99ce8`. Five focused module/integration
+checks passed on both local and Rangpur CPU runtimes. Two additional local
+submission checks verified all six argument combinations, consumed-entry
+protection and stopping after a simulated partial rejection. Their first
+attempt exposed an index error in the test's argument assertion; correcting
+that assertion produced a complete two-check pass. No real submission was
+made by these doubles. The checks together used thirty-two tiny synthetic
+AdamW steps and four native-model backward calls; no real image was opened.
+
+Deployment matches the committed Python snapshot and the fixed manifest.
+The six existing comparison fits remain complete with their saved selected
+counts. A conservative reserve treats even the smaller GFNet payloads as
+full-size ratio-4 payloads: 766,151,526 bytes for simultaneous temporary and
+retained checkpoints/records, plus 1 GiB headroom. The 1,839,893,350-byte
+gate passed with 3,634,364,416 bytes available, without deleting old models.
+
+The entry submitted all six jobs once. At **26 October 2026, 10:40:54
+Brisbane**, the saved scheduler/progress observation was:
+
+| Fit | Job | Model / seed / intervention | State |
+| --- | --- | --- | --- |
+| N1 | 699025 | CNN / 3710 / MixUp 0.2 | Pending; nodes unavailable/reserved |
+| N2 | 699026 | CNN / 3712 / MixUp 0.2 | Pending; priority |
+| N3 | 699027 | Six-block convolutional GFNet / 3712 / ratio-4 control | Pending; priority |
+| N4 | 699028 | Same GFNet / 3710 / MLP ratio 2 | Pending; priority |
+| N5 | 699029 | Same GFNet / 3711 / MLP ratio 2 | Pending; priority |
+| N6 | 699030 | Same GFNet / 3712 / MLP ratio 2 | Pending; priority |
+
+Each requests one A100, two CPUs and two hours across comp3710, a100 and
+a100-grind. The independent jobs can start as eligible resources become
+available; the twenty-minute test partition cannot accommodate this request.
+All had zero runtime/restarts, no assigned node/GPU and no completed epoch
+at this observation. Actual hardware, timing, memory and outcomes remain to
+be collected from their allocation records. The maximum fresh budget is
+180 epochs, 52,200 updates, 3,340,800 source TRAIN presentations and 514,800
+TUNE presentations; ordinary early stopping can reduce these totals.
+
+Completed G/3710, M2/3711 and M4/3711 are reused rather than retrained. After
+the six jobs finish, the predeclared three-seed comparison determines the
+common recipe for each model before the single final evaluation stage.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
