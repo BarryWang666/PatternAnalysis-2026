@@ -1571,6 +1571,64 @@ saved CNN 3711 result while retaining the established CNN recipe. No outcome
 is inferred from submission, and this four-fit development round does not
 automatically authorize a further recipe search or final TEST evaluation.
 
+### Complete the MixUp comparison and bound the remaining development
+
+All four M1--M4 jobs completed with exit 0 and normal accuracy-patience
+stopping. Their saved histories and selected TUNE records agree; every
+accuracy below uses the complete 2,860-slice population.
+
+| Fit | Seed | Selected / terminal epoch | TUNE accuracy | NLL | Confidence >=0.90 errors / false negatives |
+| --- | --- | --- | --- | --- | --- |
+| GFNet M1, MixUp 0.2 | 3710 | 17 / 25 | 74.09% | 0.9408 | 551 / 421 |
+| GFNet M2, unmixed control | 3711 | 13 / 21 | 74.30% | 1.7818 | 572 / 420 |
+| GFNet M3, MixUp 0.2 | 3711 | 10 / 20 | 75.03% | 0.8922 | 436 / 382 |
+| CNN M4, MixUp 0.2 | 3711 | 18 / 26 | 83.22% | 0.4339 | 188 / 111 |
+
+CNN 3711 improves on its unmixed 81.15%, NLL 0.7542 and 344/144 confident
+errors/false negatives. This warrants confirming the same intervention on
+3710 and 3712, rather than assuming the weakest seed's improvement applies
+to all seeds. GFNet does not show a consistent MixUp benefit: M1 falls below
+the saved 3710 control's 75.80%; M3 gains only 21 correct slices over M2.
+M3 also reduces AD recall from 62.58% to 58.56%, despite fewer confident
+errors. Confidence reduction alone is therefore not sufficient evidence
+of a better classifier.
+
+The four fits used 92 complete epochs, 26,680 updates, 1,707,520 source
+TRAIN presentations and 263,120 TUNE presentations. All recorded A100
+execution with two intra-op/two inter-op threads. Presentations are loader
+consumptions, not separately instrumented image-decode counts.
+
+One final training round is reserved, followed by one final evaluation.
+The remaining GFNet hypothesis concerns MLP capacity: in the six-block
+reference, the 256-to-1024-to-256 MLPs contain about 78% of model parameters.
+The earlier gain from reducing twelve blocks to six supports testing a
+smaller channel expansion while preserving all six Fourier filters and the
+convolutional stem. This is evidence for an experiment, not proof that
+capacity is the unique cause of the generalization gap.
+
+| Final-round fit | Seeds to train | Change / comparison |
+| --- | --- | --- |
+| CNN MixUp confirmation | 3710, 3712 | Alpha 0.2; reuse completed M4 / 3711 |
+| Six-block convolutional GFNet control | 3712 | MLP ratio 4, no MixUp; reuse G / 3710 and M2 / 3711 |
+| Smaller-MLP GFNet | 3710, 3711, 3712 | MLP ratio 2 only, no MixUp; compare with the three ratio-4 controls |
+
+These six fresh fits complete the needed three-seed groups within one round.
+An additional Dropout branch is omitted to keep the question and budget
+bounded. LR 3e-4, decay 0.01, batch 64, native [0,1] slices, thirty maximum
+epochs, two warmup epochs, minimum twenty and accuracy patience eight remain
+fixed. GFNet keeps mild geometry; CNN keeps its no-geometry recipe. Individual
+checkpoints still maximize correct TUNE slices, then minimize NLL for ties.
+
+After this round, compare each model's complete three-seed recipes by mean
+TUNE slice accuracy, then mean NLL for exact ties; retain the existing recipe
+if both are equal. Report every seed and the lowest accuracy alongside the
+mean, AD recall and confident errors/FNs. Choose one common recipe per model,
+not different recipes for different seeds. Freeze it before calibration and
+the final TEST evaluation. No further training search is planned. Achieving
+80% remains an outcome to measure, not a guarantee from this stopping budget.
+All current comparisons are TUNE results, with the previously stated cohort
+exposure and repeated-development limitations.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
