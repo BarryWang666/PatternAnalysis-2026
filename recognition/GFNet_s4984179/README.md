@@ -1899,6 +1899,23 @@ The saved-record analysis accepts the six model/seed `test.json` files with
 It performs no model inference or calibration fitting. The optional image
 root enables the five case panels; numerical summaries use saved records.
 
+### Launch the one final evaluation
+
+The fixed evaluation implementation is commit `ef72844`. Deployment and
+the six selected weight/data bindings passed preflight with 3,354,394,624
+bytes available against a 1,342,177,280-byte output/headroom gate. Existing
+model payloads are retained; the evaluation produces predictions and figures,
+not new training checkpoints.
+
+The single submission entry returned **job 699939**. At **26 October 2026,
+16:08:04 Brisbane**, it was PENDING because nodes were unavailable, drained
+or reserved, with zero runtime/restarts and no actual GPU allocation. No
+evaluation child, completed prediction file or final scientific result existed
+at that observation. The request is one A100, two CPUs and two hours across
+comp3710/a100/a100-grind. Six fixed model calls will each perform CALIBRATION
+then TEST, followed by one CPU saved-record analysis. The planned 54,600
+inference presentations remain a budget until completed outputs reconcile.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation
