@@ -4,7 +4,11 @@ COMP3710 · s4984179. **V2 develops one slice, one
 prediction, equal-slice training and TUNE accuracy selection.** The numerical
 80% assessment target concerns all TEST slices. Confidence reliability,
 high-confidence mistakes and failure analysis remain central research outcomes.
-No new V2 TEST result is claimed here.
+The completed [final TEST classification](#record-final-full-coverage-test-slice-classification)
+gives CNN accuracies of **82.77%, 80.68% and 81.96%**, and GFNet accuracies of
+**71.66%, 71.20% and 72.11%**, across seeds 3710--3712. CNN exceeds 80% in
+all three fits; GFNet does not meet the target. These are full-coverage slice
+results; classification accuracy alone does not establish confidence reliability.
 
 The V1 record is retained to explain the choices, measurements and rejected
 assumptions that led to V2. Its scan/patient prediction aggregation is historical
@@ -1915,6 +1919,79 @@ at that observation. The request is one A100, two CPUs and two hours across
 comp3710/a100/a100-grind. Six fixed model calls will each perform CALIBRATION
 then TEST, followed by one CPU saved-record analysis. The planned 54,600
 inference presentations remain a budget until completed outputs reconcile.
+
+### Record final full-coverage TEST slice classification
+
+Job **699939 completed with exit 0:0**, zero restarts and elapsed time
+**1 minute 59 seconds**. Accounting and saved outputs were inspected at
+**26 October 2026, 21:56:28 Brisbane**. All six fixed model/seed calls and
+the saved-record analysis exited 0. Each call recorded an A100-PCIE-40GB on
+a100-1, partition comp3710, with two intra-op/two inter-op threads. Completed
+inference totals are 19,080 CALIBRATION and 35,520 TEST presentations;
+these are not independently measured image-decode counts. No neural weights
+were updated during evaluation.
+
+Every selected model classifies the same **5,920 TEST slices from 136
+patients**, comprising **3,220 NC and 2,700 AD slices**. Accuracy is the
+number of correct slice predictions divided by 5,920, including every final
+partial batch and every low-confidence prediction. NC is class 0 and AD is
+class 1; the AD-minus-NC logit margin decides the class, with an exact zero
+assigned to AD. There is no scan or patient voting, probability aggregation,
+seed ensemble or rejection in this accuracy denominator. Positive temperature
+scaling preserves these class decisions and confusion counts.
+
+| Model | Seed | Selected epoch | Correct / TEST slices | Accuracy | Macro-F1 | AD AUROC |
+| --- | --- | --- | --- | --- | --- | --- |
+| CNN | 3710 | 14 | 4,900 / 5,920 | 82.77% | 0.8259 | 0.8952 |
+| CNN | 3711 | 18 | 4,776 / 5,920 | 80.68% | 0.8057 | 0.8857 |
+| CNN | 3712 | 16 | 4,852 / 5,920 | 81.96% | 0.8184 | 0.8856 |
+| GFNet | 3710 | 7 | 4,242 / 5,920 | 71.66% | 0.7136 | 0.7965 |
+| GFNet | 3711 | 13 | 4,215 / 5,920 | 71.20% | 0.7076 | 0.7908 |
+| GFNet | 3712 | 19 | 4,269 / 5,920 | 72.11% | 0.7155 | 0.7967 |
+
+The arithmetic means across the three fitted seeds are **81.80% accuracy,
+0.8167 macro-F1 and 0.8888 AUROC for CNN**, versus **71.66%, 0.7122 and
+0.7947 for GFNet**. These means summarize separate fits evaluated on the
+same population, rather than combining their predictions or treating them
+as three independent patient cohorts. At this denominator, exactly 80%
+requires 4,736 correct slices. All three CNN fits exceed that count; none
+of the GFNet fits reaches it. Completion of the evaluation does not resolve
+GFNet's unmet accuracy goal.
+
+Per-class metrics expose whether an overall result hides a weak diagnosis.
+Precision divides correct predictions of a class by all predictions of that
+class; recall divides them by its true support; F1 is their harmonic mean.
+Macro-F1 averages the NC and AD F1 values equally. AUROC uses the continuous
+AD logit margin, with average ranks for ties, rather than thresholded labels.
+
+| Model | Seed | NC precision | NC recall | NC F1 | AD precision | AD recall | AD F1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| CNN | 3710 | 83.29% | 85.47% | 84.37% | 82.11% | 79.56% | 80.81% |
+| CNN | 3711 | 82.99% | 81.09% | 82.03% | 78.05% | 80.19% | 79.10% |
+| CNN | 3712 | 83.92% | 82.67% | 83.29% | 79.69% | 81.11% | 80.40% |
+| GFNet | 3710 | 73.38% | 75.16% | 74.26% | 69.49% | 67.48% | 68.47% |
+| GFNet | 3711 | 72.09% | 76.77% | 74.36% | 69.97% | 64.56% | 67.15% |
+| GFNet | 3712 | 72.23% | 79.16% | 75.54% | 71.94% | 63.70% | 67.57% |
+
+![Full-coverage TEST slice confusion matrices for the six selected fits](figures/final_confusion.png)
+
+Rows are true labels and columns are predicted labels, ordered NC then AD.
+The lower-left cells are AD false negatives: CNN misses 552/535/510 slices
+across the three seeds, while GFNet misses 878/957/980. In every GFNet fit,
+AD recall is below NC recall. Its difficulty therefore includes substantial
+AD under-detection, rather than only a small loss near the 80% threshold.
+These errors also motivate examining confidence on wrong predictions;
+accuracy and class recall cannot establish whether the model recognizes
+its unreliable decisions.
+
+The complete twelve prediction/calibration files, analysis and original
+confusion figure are archived outside Git. Published output hashes and the
+full manifest joins agree; confusion counts, class metrics and AUROC were
+checked directly from saved predictions without another inference or
+bootstrap run. The previously disclosed cohort exposure, repeated TUNE
+development and within-patient slice correlation still limit generalization
+claims. Three CNN point estimates above 80% do not guarantee that accuracy
+on a new patient population.
 
 ## Artificial Intelligence Usage Disclosure
 
