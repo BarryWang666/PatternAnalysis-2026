@@ -1789,6 +1789,32 @@ different evaluation coverage under a fixed policy, true/saturated score
 ties, direct risk--coverage arithmetic and invalid fitting inputs. No model,
 optimizer, image or real-cohort fitting was used by these checks.
 
+### Evaluate the fixed weights once and retain the evidence
+
+The explicit `predict.py evaluate` command loads one selected checkpoint,
+predicts CALIBRATION, saves the fitted policy and records, and only then
+predicts TEST with the same evaluation-mode model. It saves raw slice records,
+raw/calibrated metrics, fixed-policy outcomes and descriptive risk curves.
+Existing `predict` calls remain restricted to TUNE/CALIBRATION. A used output
+directory is rejected, avoiding an accidental overwrite or inference replay.
+Checkpoint/data identities and the evaluation sources accompany each result.
+
+Optional synchronized profiling measures model-forward time separately from
+the full loader/prediction wall time, including the first batch and retaining
+the final partial batch. Mean forward milliseconds per slice describe batch
+throughput, not isolated clinical request latency. Inference peaks include
+resident model/batch memory. Saved training histories provide epoch costs
+and training peaks; their times exclude checkpoint persistence and allocation
+overhead, which must not be conflated with measured forward latency.
+
+Four temporary local CPU checks passed. One genuine synthetic-JPEG evaluation
+performed four forwards over four CALIBRATION and five TEST images, fitted
+once from CALIBRATION only and preserved parameters/absent gradients. It
+checked stage ordering, full/partial batching, saved metrics and fresh-output
+behavior. Additional checks cover manifest mismatch before prediction, the
+ordinary TEST guard and single CLI delegation. No real images or optimizer
+updates were used; CUDA stayed uninitialized.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

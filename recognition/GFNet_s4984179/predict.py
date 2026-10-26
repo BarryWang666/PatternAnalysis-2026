@@ -36,7 +36,7 @@ def load_selected_model(checkpoint, device="cpu"):
     return model, metadata
 
 
-def predict_slices(model, loader, device="cpu"):
+def predict_slices(model, loader, device="cpu", *, profile=None):
     """Return one record per loader image, including the final partial batch.
 
     Records contain path, subject ID, label, class, margin, AD probability and
@@ -44,9 +44,23 @@ def predict_slices(model, loader, device="cpu"):
     """
     model.to(device).eval()
     records = []
+    cuda = torch.device(device).type == "cuda"
+    forward_seconds, batches = 0.0, 0
+    if profile is not None and cuda:
+        torch.cuda.synchronize(device)
+        torch.cuda.reset_peak_memory_stats(device)
+    started = time.perf_counter()
     with torch.inference_mode():
         for batch in loader:
-            logits = model(batch["image"].to(device))
+            images = batch["image"].to(device)
+            if profile is not None and cuda:
+                torch.cuda.synchronize(device)
+            before = time.perf_counter()
+            logits = model(images)
+            if profile is not None and cuda:
+                torch.cuda.synchronize(device)
+            forward_seconds += time.perf_counter() - before
+            batches += 1
             if not torch.isfinite(logits).all():
                 raise FloatingPointError("Nonfinite prediction logits")
             margins = (logits[:, 1] - logits[:, 0]).cpu().tolist()
@@ -62,6 +76,13 @@ def predict_slices(model, loader, device="cpu"):
                 })
     if not records or len(records) != len(loader.dataset):
         raise ValueError("Prediction must cover every slice")
+    if profile is not None:
+        profile.update(n=len(records), batches=batches, wall_seconds=time.perf_counter() - started,
+                       forward_seconds=forward_seconds,
+                       forward_ms_per_slice=1000 * forward_seconds / len(records),
+                       forward_ms_per_batch=1000 * forward_seconds / batches,
+                       peak_allocated_bytes=torch.cuda.max_memory_allocated(device) if cuda else None,
+                       peak_reserved_bytes=torch.cuda.max_memory_reserved(device) if cuda else None)
     return records
 
 
@@ -324,6 +345,72 @@ def infer(checkpoint, manifest, data_root, partition, batch_size=64, *,
     return result
 
 
+def evaluate_selected(checkpoint, manifest, data_root, output, batch_size=64, *,
+                      device="cpu", runtime=None):
+    """Fit CALIBRATION policy, then evaluate every TEST slice exactly once.
+
+    The selected best weights stay fixed in one evaluation model. Save the
+    calibration stage before TEST; this fresh-run command never overwrites a
+    previous evaluation. It creates no optimizer or saved-training RNG restore.
+    """
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    if any(output.iterdir()):
+        raise FileExistsError("Use a fresh final-evaluation output directory")
+    rows = read_manifest(manifest)
+    manifest_sha256 = file_digest(manifest)
+    checkpoint_sha256 = file_digest(checkpoint)
+    model, metadata = load_selected_model(checkpoint, device)
+    if metadata["identity"]["manifest_sha256"] != manifest_sha256:
+        raise ValueError("Checkpoint and final-evaluation manifest must match")
+    config = metadata["identity"]["config"]
+    identity = {"model": config["model"], "seed": config["seed"],
+                "checkpoint_epoch": metadata["epoch"], "checkpoint_sha256": checkpoint_sha256,
+                "manifest_sha256": manifest_sha256,
+                "training_identity": metadata["identity"], "runtime": runtime or {},
+                "evaluation_sources": {name: file_digest(Path(__file__).with_name(name))
+                                       for name in ("dataset.py", "modules.py", "train.py", "predict.py")}}
+
+    def predict_partition(partition):
+        data = ADNISlices(rows, data_root, partition,
+                          input_scale=config.get("input_scale", "zero_one"))
+        profile = {}
+        records = predict_slices(model, make_loader(data, batch_size, config["seed"]),
+                                 device, profile=profile)
+        return records, profile
+
+    calibration, calibration_profile = predict_partition("calibration")
+    policy = fit_calibration(calibration)
+    scaled = scale_confidence(calibration, policy["temperature"])
+    write_json(output / "calibration.json", {
+        **identity, "partition": "calibration", "records": calibration, "policy": policy,
+        "raw": reliability_report(calibration), "calibrated": reliability_report(scaled),
+        "profile": calibration_profile,
+    })
+    print(f"calibration_complete model={config['model']} seed={config['seed']} n={len(calibration)}", flush=True)
+    records, profile = predict_partition("test")
+    scaled = scale_confidence(records, policy["temperature"])
+    result = {**identity, "format": "final-slice-evaluation-v1", "partition": "test",
+              "records": records, "policy": policy,
+              "raw": reliability_report(records), "calibrated": reliability_report(scaled),
+              "selective": selective_report(scaled, policy["score_threshold"]),
+              "risk_coverage": risk_coverage(records), "profile": profile,
+              "parameters": sum(parameter.numel() for parameter in model.parameters())}
+    history_path = Path(checkpoint).with_name("history.json")
+    if history_path.exists():
+        history = json.loads(history_path.read_text())
+        result["training_cost"] = {
+            "epochs": len(history),
+            "train_epoch_seconds": [item["train"]["elapsed_s"] for item in history],
+            "tune_epoch_seconds": [item["tune"]["elapsed_s"] for item in history],
+            "peak_training_allocated_bytes": max(item["train"]["peak_allocated_bytes"] or 0 for item in history),
+            "peak_training_reserved_bytes": max(item["train"]["peak_reserved_bytes"] or 0 for item in history),
+        }
+    write_json(output / "test.json", result)
+    print(f"test_complete model={config['model']} seed={config['seed']} n={len(records)}", flush=True)
+    return result
+
+
 def main(argv=None):
     """Run allocated-GPU prediction or report existing records on CPU."""
     parser = argparse.ArgumentParser(description="ADNI slice prediction and reliability reporting")
@@ -337,14 +424,28 @@ def main(argv=None):
     prediction.add_argument("--seed", type=int, default=3710,
                             help="Runtime initialization seed; trained model identity comes from checkpoint")
     prediction.add_argument("--output", required=True)
+    evaluation = commands.add_parser("evaluate", help="One CALIBRATION/TEST pass for frozen best weights")
+    evaluation.add_argument("--checkpoint", required=True)
+    evaluation.add_argument("--manifest", required=True)
+    evaluation.add_argument("--data-root", required=True)
+    evaluation.add_argument("--output", required=True, help="Fresh directory for calibration.json and test.json")
+    evaluation.add_argument("--batch-size", type=int, default=64)
+    evaluation.add_argument("--seed", type=int, default=3710)
     reporting = commands.add_parser("report", help="Analyze saved predictions without rerunning the model")
     reporting.add_argument("--input", required=True)
     reporting.add_argument("--output", required=True)
     reporting.add_argument("--bins", type=int, default=10)
     reporting.add_argument("--figure", help="Optional reliability diagram PNG/PDF")
     args = parser.parse_args(argv)
-    if args.command == "predict":
+    if args.command in ("predict", "evaluate"):
         device, runtime = a100_runtime(args.seed)
+        if args.command == "evaluate":
+            result = evaluate_selected(args.checkpoint, args.manifest, args.data_root, args.output,
+                                       args.batch_size, device=device, runtime=runtime)
+            print(json.dumps({"model": result["model"], "seed": result["seed"],
+                              "test_accuracy": result["raw"]["accuracy"],
+                              "temperature": result["policy"]["temperature"]}, indent=2))
+            return 0
         result = infer(args.checkpoint, args.manifest, args.data_root, args.partition,
                        args.batch_size, device=device)
         result["runtime"] = runtime
