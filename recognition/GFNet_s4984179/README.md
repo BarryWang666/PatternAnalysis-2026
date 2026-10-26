@@ -1840,6 +1840,33 @@ differences for identical models, input reordering, mismatched joins,
 undefined selective risk, five known error slots and fallback exclusions.
 These are arithmetic references, not findings from the real TEST population.
 
+### Compose figures and preparation sensitivity from saved predictions
+
+`predict.py analyze` joins the six saved TEST outputs to the complete manifest
+population before calculating paired intervals and selecting cases. It writes
+machine-readable results and a factual findings table, reliability plots,
+risk--coverage curves with the fixed operating points, confusion matrices,
+cost comparisons and five case panels. Positive temperature preserves error
+ranking, so one raw-margin ranking curve is sufficient; calibration changes
+the confidence interpretation, not the ordering of difficult slices.
+
+The manifest retains original slice indices and within-acquisition ranks.
+Their difference describes the source start index; rank quarters describe
+position among the twenty slices. Report fixed-model metrics within those
+strata, including the common source-start subset, while keeping all TEST
+slices in the main report. Different diagnosis/preparation compositions can
+affect apparent generalization. These descriptive checks do not prove
+removal of confounding or a causal disease signal, and cannot establish
+external-site performance.
+
+Three additional local checks passed: a complete six-output synthetic
+analysis with 2,000 draws and five generated figures, rejection of missing
+TEST slices before analysis, and single analysis-CLI delegation. The complete
+check mocked model loading, inference and fitting to fail if called; only
+five synthetic case images were read for illustration. Synthetic figures
+were visually inspected outside the submission folder. Actual case panels
+will be generated only from the fixed final outputs.
+
 ## Artificial Intelligence Usage Disclosure
 
 OpenAI Codex assisted with implementation, code organization, interpretation

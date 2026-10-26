@@ -442,6 +442,137 @@ def plot_reliability(report, output, title="Slice confidence reliability"):
     return str(output)
 
 
+def preparation_sensitivity(results, manifest_rows):
+    """Describe source slice-start/rank strata without changing the main cohort."""
+    lookup = {row["relative_image_path"]: row for row in manifest_rows if row["partition"] == "test"}
+    if not all("slice_index" in row and "slice_rank" in row for row in lookup.values()):
+        return {"status": "Source slice-index/rank metadata unavailable"}
+    groups = {}
+    for path, row in lookup.items():
+        start = int(row["slice_index"]) - int(row["slice_rank"])
+        for name in (f"source_start_{start}", f"rank_quarter_{int(row['slice_rank']) // 5 + 1}"):
+            groups.setdefault(name, set()).add(path)
+    output = {}
+    for name, paths in sorted(groups.items()):
+        strata = []
+        for item in results:
+            rows = [row for row in item["records"] if row["path"] in paths]
+            scaled = scale_confidence(rows, item["policy"]["temperature"])
+            strata.append({"model": item["model"], "seed": item["seed"],
+                           "subjects": len({r["subject_id"] for r in rows}),
+                           "raw": reliability_report(rows), "calibrated": reliability_report(scaled),
+                           "selective": selective_report(scaled, item["policy"]["score_threshold"])})
+        output[name] = strata
+    return output
+
+
+def plot_final_results(results, cases, output, data_root=None):
+    """Plot saved metrics/predictions; optional case images need no model pass."""
+    import matplotlib.pyplot as plt
+
+    output = Path(output)
+    results = sorted(results, key=lambda item: (item["model"], item["seed"]))
+    fig, axes = plt.subplots(2, 3, figsize=(12, 7), layout="constrained")
+    for ax, item in zip(axes.flat, results):
+        ax.plot([.5, 1], [.5, 1], "--", color=".6")
+        for kind, color in (("raw", "#2563EB"), ("calibrated", "#D97706")):
+            bins = [b for b in item[kind]["reliability_bins"] if b["count"]]
+            ax.plot([b["confidence"] for b in bins], [b["accuracy"] for b in bins], "o-", color=color,
+                    label=f"{kind}: ECE {item[kind]['ece']:.3f}")
+        ax.set(title=f"{item['model'].upper()} / {item['seed']}", xlim=(.49, 1.01), ylim=(0, 1.02),
+               xlabel="Mean confidence", ylabel="Fraction correct")
+        ax.grid(alpha=.2); ax.legend(fontsize=8)
+    fig.savefig(output / "reliability.png", dpi=180); plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8, 5), layout="constrained")
+    for item in results:
+        points = item["risk_coverage"]["points"]
+        color = "#2563EB" if item["model"] == "cnn" else "#D97706"
+        ax.step([p["coverage"] for p in points], [p["risk"] for p in points], where="post",
+                color=color, alpha=.65, label=f"{item['model'].upper()} / {item['seed']}")
+        if item["selective"]["risk"] is not None:
+            ax.scatter(item["selective"]["coverage"], item["selective"]["risk"], color=color, s=35)
+    ax.set(xlabel="Coverage (fraction of TEST slices retained)", ylabel="Selective error rate",
+           title="Slice risk--coverage; dots use CALIBRATION-only policies", xlim=(0, 1), ylim=(0, 1))
+    ax.legend(ncol=2, fontsize=8); ax.grid(alpha=.2)
+    fig.savefig(output / "risk_coverage.png", dpi=180); plt.close(fig)
+
+    fig, axes = plt.subplots(2, 3, figsize=(11, 6), layout="constrained")
+    for ax, item in zip(axes.flat, results):
+        matrix = np.asarray(item["raw"]["confusion"])
+        ax.imshow(matrix, cmap="Blues", vmin=0, vmax=max(sum(matrix)))
+        for i in range(2):
+            for j in range(2):ax.text(j, i, str(matrix[i, j]), ha="center", va="center")
+        ax.set(xticks=[0, 1], yticks=[0, 1], xticklabels=["NC", "AD"], yticklabels=["NC", "AD"],
+               xlabel="Predicted", ylabel="True", title=f"{item['model'].upper()} {item['seed']}: {item['raw']['accuracy']:.2%}")
+    fig.savefig(output / "confusion.png", dpi=180); plt.close(fig)
+
+    fig, axes = plt.subplots(1, 3, figsize=(11, 3.8), layout="constrained")
+    for ax, field, title, scale in zip(axes, ("parameters", "peak_training_allocated_bytes", "forward_ms_per_slice"),
+                                      ("Parameters (millions)", "Recorded training peak (GiB)", "Forward throughput (ms/slice)"),
+                                      (1e6, 2 ** 30, 1)):
+        for index, model in enumerate(("cnn", "gfnet")):
+            items = [r for r in results if r["model"] == model]
+            values = [(r[field] if field == "parameters" else r.get("training_cost", {}).get(field)
+                       if field.startswith("peak_training") else r["profile"][field]) for r in items]
+            values = [v / scale for v in values if v is not None]
+            ax.bar(index, np.mean(values), color=("#2563EB", "#D97706")[index], alpha=.6)
+            ax.scatter(np.full(len(values), index), values, color="black", s=18)
+        ax.set(xticks=[0, 1], xticklabels=["CNN", "GFNet"], title=title); ax.grid(axis="y", alpha=.2)
+    fig.savefig(output / "cost.png", dpi=180); plt.close(fig)
+
+    if data_root is not None and cases:
+        from PIL import Image
+        fig, axes = plt.subplots(len(cases), 2, figsize=(12, 2.7 * len(cases)), squeeze=False, layout="constrained")
+        for (image_ax, text_ax), case in zip(axes, cases):
+            with Image.open(Path(data_root) / case["path"]) as image:image_ax.imshow(np.asarray(image), cmap="gray", vmin=0, vmax=255)
+            image_ax.axis("off"); text_ax.axis("off")
+            lines = [case["slot"] + (" (fallback)" if case["used_fallback"] else ""),
+                     f"True {'AD' if case['label'] else 'NC'} | {case['subject_id']}", case["path"]]
+            for key, value in sorted(case["predictions"].items()):
+                lines.append(f"{key}: {'AD' if value['prediction'] else 'NC'}; raw {value['raw_confidence']:.3f}, calibrated {value['calibrated_confidence']:.3f}")
+            text_ax.text(0, .98, "\n".join(lines), va="top", fontsize=8.5)
+        fig.savefig(output / "failure_cases.png", dpi=160); plt.close(fig)
+
+
+def analyze_evaluations(inputs, manifest, output, data_root=None):
+    """Compose one saved-record analysis, paired intervals, strata and figures."""
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    if any(output.iterdir()):
+        raise FileExistsError("Use a fresh final-analysis directory")
+    results = [json.loads(Path(path).read_text()) for path in inputs]
+    rows = read_manifest(manifest)
+    expected = sorted((r["relative_image_path"], r["subject_id"], r["label"]) for r in rows if r["partition"] == "test")
+    if {(r["model"], r["seed"]) for r in results} != {(m, s) for m in ("cnn", "gfnet") for s in (3710, 3711, 3712)} or len(results) != 6:
+        raise ValueError("Final analysis requires the six frozen model/seed outputs")
+    for item in results:
+        actual = sorted((r["path"], r["subject_id"], r["label"]) for r in item["records"])
+        if item["partition"] != "test" or item["manifest_sha256"] != file_digest(manifest) or actual != expected:
+            raise ValueError("Final results must match every declared TEST slice")
+    cases = failure_cases(results)
+    result = {"bootstrap": paired_bootstrap(results), "failure_cases": cases,
+              "preparation_sensitivity": preparation_sensitivity(results, rows),
+              "models": [{k: v for k, v in item.items() if k not in ("records", "risk_coverage")} for item in results],
+              "input_hashes": {str(path): file_digest(path) for path in inputs}}
+    write_json(output / "analysis.json", result)
+    plot_final_results(results, cases, output, data_root)
+    lines = ["# Final individual-slice evaluation", "", "All seeds share the same TEST patients; these are not independent cohorts.", "",
+             "| Model | Seed | Correct / slices | Accuracy | Raw / calibrated NLL | Raw / calibrated ECE | Fixed coverage / risk | HC errors / FNs (raw) |",
+             "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    for item in sorted(results, key=lambda r: (r["model"], r["seed"])):
+        a, b, s = item["raw"], item["calibrated"], item["selective"]
+        risk = f"{s['risk']:.2%}" if s["risk"] is not None else "undefined"
+        lines.append(f"| {item['model']} | {item['seed']} | {a['correct']} / {a['n']} | {a['accuracy']:.2%} | {a['nll']:.4f} / {b['nll']:.4f} | {a['ece']:.4f} / {b['ece']:.4f} | {s['coverage']:.2%} / {risk} | {a['high_confidence_errors']} / {a['high_confidence_false_negatives']} |")
+    lines += ["", "analysis.json contains paired conditional intervals, all classification/uncertainty metrics, source-start/rank sensitivity, error cases and cost measurements.",
+              "Thresholds and temperatures were fixed from CALIBRATION; accuracy includes every TEST slice. Compare selective risk alongside achieved coverage.",
+              "Source-start/rank strata are descriptive and cannot establish removal of preparation confounding or causal disease features.",
+              "The study compares selected model/training recipes, not an isolated Fourier-operator ablation. Prior cohort exposure and repeated TUNE development limit generalization claims.",
+              "Clinical diagnostic ambiguity and external-site validity were not established. The engineering recommendation must weigh reliability/errors before accuracy and cost."]
+    (output / "FINDINGS.md").write_text("\n".join(lines) + "\n")
+    return result
+
+
 def infer(checkpoint, manifest, data_root, partition, batch_size=64, *,
           device="cpu", output=None):
     """Predict TUNE/CALIBRATION slices; TEST requires its later fixed-policy path."""
@@ -560,7 +691,17 @@ def main(argv=None):
     reporting.add_argument("--output", required=True)
     reporting.add_argument("--bins", type=int, default=10)
     reporting.add_argument("--figure", help="Optional reliability diagram PNG/PDF")
+    analysis = commands.add_parser("analyze", help="Analyze six saved final evaluations without model execution")
+    analysis.add_argument("--inputs", nargs=6, required=True)
+    analysis.add_argument("--manifest", required=True)
+    analysis.add_argument("--output", required=True)
+    analysis.add_argument("--data-root", help="Optional original image root for five case illustrations")
     args = parser.parse_args(argv)
+    if args.command == "analyze":
+        result = analyze_evaluations(args.inputs, args.manifest, args.output, args.data_root)
+        print(json.dumps({"patients": result["bootstrap"]["patients"], "slices": result["bootstrap"]["slices"],
+                          "replicates": result["bootstrap"]["replicates"]}, indent=2))
+        return 0
     if args.command in ("predict", "evaluate"):
         device, runtime = a100_runtime(args.seed)
         if args.command == "evaluate":
