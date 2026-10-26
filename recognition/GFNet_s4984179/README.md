@@ -4,6 +4,10 @@ COMP3710 · s4984179. **V2 develops one slice, one
 prediction, equal-slice training and TUNE accuracy selection.** The numerical
 80% assessment target concerns all TEST slices. Confidence reliability,
 high-confidence mistakes and failure analysis remain central research outcomes.
+The [final confidence analysis](#evaluate-whether-slice-confidence-reflects-correctness)
+finds substantial raw overconfidence in both models. CALIBRATION-only temperature
+scaling improves probability reliability, while CNN better separates correct
+from incorrect predictions descriptively; confident errors remain in both models.
 The completed [final TEST classification](#record-final-full-coverage-test-slice-classification)
 gives CNN accuracies of **82.77%, 80.68% and 81.96%**, and GFNet accuracies of
 **71.66%, 71.20% and 72.11%**, across seeds 3710--3712. CNN exceeds 80% in
@@ -1992,6 +1996,133 @@ bootstrap run. The previously disclosed cohort exposure, repeated TUNE
 development and within-patient slice correlation still limit generalization
 claims. Three CNN point estimates above 80% do not guarantee that accuracy
 on a new patient population.
+
+### Evaluate whether slice confidence reflects correctness
+
+The core investigation asks whether the model knows when its prediction is
+unreliable, including slices near its decision boundary. For two logits,
+the predicted-class confidence is `sigmoid(abs(z_AD - z_NC))`. Confidence
+is therefore a model score whose reliability must be measured against actual
+correctness, rather than assumed from its numerical size. Every result below
+uses the same full TEST population as the classification table.
+
+NLL penalizes assigning little probability to the true diagnosis, especially
+when the prediction is confidently wrong. The binary Brier score is the mean
+of `(p_AD - label)^2`; this definition does not double the score by summing
+both class probabilities. Both scores depend on classification as well as
+probability quality. ECE measures the slice-weighted absolute difference
+between mean confidence and accuracy within ten fixed equal-width bins on
+[0.5, 1]. The last bin includes confidence 1. Lower values are better, but
+small ECE alone does not establish good error detection or high accuracy.
+
+Each temperature was fitted on its model's 3,180 CALIBRATION slices by NLL,
+then applied unchanged to TEST. All six optima are inside the predeclared
+0.05--20 bounds. Temperatures above one soften the excessive logit magnitude;
+neither TEST labels nor TEST ECE choose these temperatures. The table uses
+**raw → calibrated** values; ECE is displayed as a percentage-point gap.
+
+| Model | Seed | Temperature | NLL | Binary Brier | ECE |
+| --- | --- | --- | --- | --- | --- |
+| CNN | 3710 | 2.954 | 0.6745 → 0.4121 | 0.1423 → 0.1277 | 11.01% → 1.95% |
+| CNN | 3711 | 4.065 | 0.8547 → 0.4271 | 0.1655 → 0.1354 | 15.03% → 1.91% |
+| CNN | 3712 | 3.893 | 0.9360 → 0.4275 | 0.1565 → 0.1324 | 13.86% → 2.50% |
+| GFNet | 3710 | 3.793 | 0.9777 → 0.5454 | 0.2303 → 0.1847 | 19.60% → 2.65% |
+| GFNet | 3711 | 7.622 | 1.9236 → 0.5550 | 0.2599 → 0.1882 | 24.84% → 4.17% |
+| GFNet | 3712 | 10.652 | 2.3713 → 0.5461 | 0.2579 → 0.1841 | 24.79% → 2.22% |
+
+![Raw and calibrated TEST slice reliability for all six selected fits](figures/final_reliability.png)
+
+Each point compares mean confidence with the observed correct fraction in
+one occupied bin. Points below the diagonal indicate overconfidence. Raw
+predictions lie well below it, particularly at high confidence; calibration
+brings the occupied bins closer to the diagonal. The seed-mean ECE decreases
+from **13.30 to 2.12 percentage points for CNN**, and from **23.08 to 3.01
+for GFNet**. Each plotted bin is a descriptive group, not an independent
+patient sample, and the point markers do not display uncertainty or bin size.
+
+Confidence also needs to distinguish errors from correct predictions. The
+Pearson correlation below compares slice confidence with a binary correctness
+indicator. Error-detection AUROC treats an incorrect prediction as the positive
+case and uses negative absolute logit margin as its score; 0.5 represents
+random ordering. It is distinct from the AD-versus-NC classification AUROC.
+
+| Model | Seed | Raw mean confidence, correct | Raw mean confidence, wrong | Correctness correlation, raw → calibrated | Error-detection AUROC, both |
+| --- | --- | --- | --- | --- | --- |
+| CNN | 3710 | 95.32% | 86.16% | 0.295 → 0.327 | 0.738 |
+| CNN | 3711 | 97.12% | 89.80% | 0.291 → 0.366 | 0.756 |
+| CNN | 3712 | 96.92% | 89.94% | 0.262 → 0.326 | 0.728 |
+| GFNet | 3710 | 93.27% | 86.16% | 0.241 → 0.307 | 0.697 |
+| GFNet | 3711 | 97.19% | 93.21% | 0.186 → 0.296 | 0.691 |
+| GFNet | 3712 | 97.75% | 94.71% | 0.157 → 0.293 | 0.691 |
+
+The positive correlations show useful but limited association with correctness.
+CNN's error-detection AUROC is descriptively higher in each matched seed.
+GFNet seeds 3711/3712 average over 93% raw confidence even when wrong,
+leaving little separation from their correct predictions. At the other end,
+the raw [0.50, 0.55) confidence bins contain only 53--173 slices per fit,
+with observed accuracy 43.08--57.78%. Low-confidence predictions are thus
+unreliable here, but these model-boundary slices have no clinical ambiguity
+annotations; this does not identify medically ambiguous patients.
+
+Positive temperature scaling preserves absolute-margin ordering and all class
+decisions. Consequently the error-detection AUROC is unchanged in every fit.
+The increase in Pearson correlation reflects the changed confidence scale,
+not a newly learned ability to rank errors. Calibration improves the meaning
+of probability values without repairing GFNet's accuracy or removing errors.
+
+To inspect the dangerous tail, define **high confidence as at least 0.90**
+for both raw and calibrated scores. Error rate divides errors by the number
+of high-confidence slices in the same column; a false negative is a true AD
+slice predicted NC. All entries again show raw → calibrated.
+
+| Model | Seed | High-confidence slices | Errors among them | False negatives among them | Error rate among them |
+| --- | --- | --- | --- | --- | --- |
+| CNN | 3710 | 4,753 → 2,474 | 564 → 160 | 318 → 108 | 11.87% → 6.47% |
+| CNN | 3711 | 5,137 → 1,761 | 772 → 94 | 385 → 44 | 15.03% → 5.34% |
+| CNN | 3712 | 5,126 → 2,559 | 733 → 194 | 361 → 125 | 14.30% → 7.58% |
+| GFNet | 3710 | 4,285 → 856 | 938 → 54 | 464 → 16 | 21.89% → 6.31% |
+| GFNet | 3711 | 5,173 → 803 | 1,340 → 53 | 756 → 14 | 25.90% → 6.60% |
+| GFNet | 3712 | 5,344 → 309 | 1,374 → 15 | 828 → 8 | 25.71% → 4.85% |
+
+Fewer predictions now qualify as highly confident; the underlying mistakes
+have not been corrected. For example, GFNet-3712 retains only 309/5,920
+slices (5.22%) above 0.90 after calibration, versus CNN-3712's 2,559/5,920
+(43.23%). Its smaller high-confidence error count cannot by itself establish
+better reliability at the same coverage. Even after calibration, every fit
+still makes high-confidence false negatives.
+
+The existing 2,000 paired, diagnosis-stratified patient-bootstrap draws
+(seed 9001) quantify uncertainty while retaining all slices and sampled
+patient multiplicities. The table reports the arithmetic seed mean and
+95% percentile interval, followed by the paired GFNet-minus-CNN difference.
+All six metrics have 2,000 valid replicates. ECE uses fractions here, so
+0.01 is a one-percentage-point gap; all listed metrics favor lower values.
+
+| Metric | CNN mean [95% interval] | GFNet mean [95% interval] | GFNet − CNN [95% interval] |
+| --- | --- | --- | --- |
+| Raw NLL | 0.8217 [0.5743, 1.1218] | 1.7576 [1.3285, 2.2113] | 0.9358 [0.5781, 1.3052] |
+| Calibrated NLL | 0.4222 [0.3451, 0.5113] | 0.5489 [0.4780, 0.6220] | 0.1266 [0.0586, 0.1875] |
+| Raw Brier | 0.1548 [0.1171, 0.1959] | 0.2494 [0.1972, 0.3030] | 0.0946 [0.0534, 0.1343] |
+| Calibrated Brier | 0.1319 [0.1041, 0.1622] | 0.1857 [0.1560, 0.2162] | 0.0538 [0.0292, 0.0769] |
+| Raw ECE | 0.1330 [0.0969, 0.1749] | 0.2308 [0.1792, 0.2846] | 0.0978 [0.0538, 0.1391] |
+| Calibrated ECE | 0.0212 [0.0203, 0.0483] | 0.0301 [0.0212, 0.0779] | 0.0089 [-0.0137, 0.0432] |
+
+The paired differences support lower NLL and Brier for CNN both before and
+after calibration on this cohort. The calibrated ECE difference includes
+zero, so its smaller CNN point estimate does not establish a clear ECE
+advantage. The intervals condition on the six selected models, their fixed
+calibration and this cohort; they omit refitting, model-selection and
+external-population uncertainty. They do not make the seeds independent
+cohorts, and no interval for the correlations or error-detection AUROCs is
+claimed here.
+
+The evidence therefore does not support the selected GFNet as a more reliable
+judge of its own errors than the CNN baseline. Both raw models are overconfident,
+and both benefit from separate probability calibration. Neither low ECE nor
+the presence of a confidence score establishes clinical trustworthiness.
+These findings reuse the saved evaluation and bootstrap outputs. Direct
+saved-record arithmetic checks agree for all six raw/calibrated metric sets
+and 120 reliability bins; no model, fitting or bootstrap run was repeated.
 
 ## Artificial Intelligence Usage Disclosure
 
