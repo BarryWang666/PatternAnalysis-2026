@@ -8,6 +8,9 @@ The [final confidence analysis](#evaluate-whether-slice-confidence-reflects-corr
 finds substantial raw overconfidence in both models. CALIBRATION-only temperature
 scaling improves probability reliability, while CNN better separates correct
 from incorrect predictions descriptively; confident errors remain in both models.
+The [selective-prediction analysis](#test-whether-rejecting-uncertain-slices-reduces-errors)
+finds lower error rates after rejection, with CNN outperforming GFNet at the
+common 80% coverage coordinate. Both still retain substantial AD false negatives.
 The completed [final TEST classification](#record-final-full-coverage-test-slice-classification)
 gives CNN accuracies of **82.77%, 80.68% and 81.96%**, and GFNet accuracies of
 **71.66%, 71.20% and 72.11%**, across seeds 3710--3712. CNN exceeds 80% in
@@ -2123,6 +2126,106 @@ the presence of a confidence score establishes clinical trustworthiness.
 These findings reuse the saved evaluation and bootstrap outputs. Direct
 saved-record arithmetic checks agree for all six raw/calibrated metric sets
 and 120 reliability bins; no model, fitting or bootstrap run was repeated.
+
+### Test whether rejecting uncertain slices reduces errors
+
+Confidence is useful operationally only if abstaining on uncertain predictions
+reduces the error burden among those retained. **Coverage** is retained slices
+divided by all 5,920 TEST slices; **selective risk** is wrong predictions divided
+by retained slices. Reducing risk by retaining very few predictions has a cost,
+so both quantities must be shown. Rejected slices remain unresolved rather than
+being counted as correct or assigned NC. The full-coverage assessment accuracy
+reported above is unchanged.
+
+The deployed policy was fixed before TEST: each model/seed retains at least
+80% of its CALIBRATION slices by absolute temperature-scaled logit margin,
+including complete score ties. All six saved policies retain exactly 2,544
+of 3,180 CALIBRATION slices. Apply the same score threshold to TEST without
+retuning it to force 80% coverage. Confidence cutoffs below are readable
+equivalents; the saved absolute-margin thresholds determine membership.
+This policy is separate from the fixed 0.90 high-confidence audit above.
+
+| Model | Seed | Fixed calibrated confidence cutoff | TEST coverage | Retained errors / retained slices | Full → selective risk | Retained AD FNs / all AD slices |
+| --- | --- | --- | --- | --- | --- | --- |
+| CNN | 3710 | 0.6658 | 81.62% | 594 / 4,832 | 17.23% → 12.29% | 329 / 2,700 |
+| CNN | 3711 | 0.6643 | 82.69% | 687 / 4,895 | 19.32% → 14.03% | 342 / 2,700 |
+| CNN | 3712 | 0.7009 | 79.63% | 580 / 4,714 | 18.04% → 12.30% | 299 / 2,700 |
+| GFNet | 3710 | 0.6022 | 79.88% | 1,127 / 4,729 | 28.34% → 23.83% | 577 / 2,700 |
+| GFNet | 3711 | 0.5975 | 82.75% | 1,230 / 4,899 | 28.80% → 25.11% | 690 / 2,700 |
+| GFNet | 3712 | 0.5972 | 81.17% | 1,140 / 4,805 | 27.89% → 23.73% | 688 / 2,700 |
+
+Mean CNN risk falls from **18.20% to 12.88%**, retaining **81.31%** of TEST
+slices. GFNet falls from **28.34% to 24.22%**, retaining **81.27%**. These
+are arithmetic seed means, not pooled or ensembled predictions. Rejection
+helps both recipes, but does not turn GFNet into an accurate retained classifier:
+its retained accuracy remains only 74.89--76.27%. CNN's retained accuracy is
+85.97--87.71%, alongside the cost of leaving about one fifth of slices unresolved.
+
+![TEST slice risk--coverage curves with frozen CALIBRATION policy markers](figures/final_risk_coverage.png)
+
+The curves describe the ranking of saved TEST scores, admitting whole groups
+with equal absolute margin. Their thresholds are descriptive coordinates,
+not replacements for the frozen operating policies marked by dots. Positive
+temperature scaling preserves this ranking, so it does not improve the curve.
+To compare models independently of their achieved policy coverage, use the
+predeclared common coverage coordinates. The selected coordinates below are
+exactly 592, 2,960, 4,736 and 5,920 retained slices in every fit; no tie causes
+an overshoot here.
+
+| Model | Seed | Risk at 10% coverage | Risk at 50% | Risk at 80% | Risk at 100% | AURC |
+| --- | --- | --- | --- | --- | --- | --- |
+| CNN | 3710 | 3.38% | 7.57% | 11.76% | 17.23% | 0.0874 |
+| CNN | 3711 | 3.89% | 7.67% | 13.45% | 19.32% | 0.0921 |
+| CNN | 3712 | 7.26% | 8.07% | 12.42% | 18.04% | 0.0951 |
+| GFNet | 3710 | 4.73% | 16.55% | 23.88% | 28.34% | 0.1582 |
+| GFNet | 3711 | 5.24% | 17.26% | 24.47% | 28.80% | 0.1664 |
+| GFNet | 3712 | 5.57% | 16.42% | 23.50% | 27.89% | 0.1596 |
+
+At common 80% coverage, the mean risk is **12.54% for CNN versus 23.95%
+for GFNet**. CNN is lower in every matched seed at each of the nine saved
+20--100% coordinates. It does not dominate at every possible coverage:
+GFNet-3712 has lower risk than CNN-3712 at 10%, and the curves cross near
+the low-coverage end. With very few retained slices, a single error produces
+a large risk change; the most extreme confidence is not a guarantee of correctness.
+
+AURC is the right-endpoint step sum of risk times the coverage increment
+over complete tied-score groups, including the first group from zero coverage.
+Lower is better; the means are **0.0916 for CNN and 0.1614 for GFNet**.
+The plotted steps use this same convention. AURC reflects both overall
+classification error and error ranking, so its difference cannot be attributed
+solely to uncertainty estimation. The common-coverage results and AURCs are
+descriptive; the saved bootstrap did not compute their confidence intervals.
+
+The existing paired patient-bootstrap intervals do cover the frozen-policy
+quantities below. Entries are seed means with 95% percentile intervals,
+reusing the same 2,000 diagnosis-stratified draws. Model columns use percentages;
+the GFNet-minus-CNN column uses percentage-point differences.
+
+| Frozen-policy quantity | CNN mean [95% interval] | GFNet mean [95% interval] | GFNet − CNN [95% interval] |
+| --- | --- | --- | --- |
+| TEST coverage | 81.31 [78.35, 84.29] | 81.27 [78.66, 84.03] | -0.05 [-2.30, 2.24] |
+| Selective risk | 12.88 [8.92, 17.41] | 24.22 [18.09, 30.71] | 11.34 [6.45, 16.21] |
+| Retained FNs / all AD slices | 11.98 [7.13, 18.02] | 24.14 [16.41, 32.01] | 12.16 [5.05, 18.59] |
+
+GFNet's higher frozen-policy risk is supported by a paired difference interval
+above zero, at similar but nonidentical achieved coverages. This interval is
+not an equal-coverage comparison; that is supplied separately by the descriptive
+curve coordinates. The retained-FN fraction uses all 2,700 AD slices as its
+denominator, not only retained AD slices, and is not a conventional recall
+after assigning a diagnosis to rejected cases.
+
+The policy still retains **299--342 AD false negatives per CNN seed and
+577--690 per GFNet seed**. The separate 0.90 audit also retains calibrated
+high-confidence false negatives in every fit. A useful reduction in average
+risk therefore does not demonstrate safe automatic acceptance, a validated
+review workflow, or removal of the most consequential errors. The results
+support CNN as the stronger selective predictor for these recipes and this
+cohort, while preserving the shared cohort and fixed-fit uncertainty limits.
+
+All policy counts, saved tied-score curve groups, sixty common coordinates
+and AURC sums agree with direct saved-record arithmetic. The original figure
+and bootstrap summaries are reused; no inference, calibration fitting,
+bootstrap rerun or TEST threshold optimization was performed for this report.
 
 ## Artificial Intelligence Usage Disclosure
 
