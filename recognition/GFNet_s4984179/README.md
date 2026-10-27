@@ -1,1937 +1,791 @@
-# GFNet and CNN for confidence-aware ADNI slice classification
-
-COMP3710 · s4984179. **V2 develops one slice, one
-prediction, equal-slice training and TUNE accuracy selection.** The numerical
-80% assessment target concerns all TEST slices. Confidence reliability,
-high-confidence mistakes and failure analysis remain central research outcomes.
-The [final confidence analysis](#evaluate-whether-slice-confidence-reflects-correctness)
-finds substantial raw overconfidence in both models. CALIBRATION-only temperature
-scaling improves probability reliability, while CNN better separates correct
-from incorrect predictions descriptively; confident errors remain in both models.
-The [selective-prediction analysis](#test-whether-rejecting-uncertain-slices-reduces-errors)
-finds lower error rates after rejection, with CNN outperforming GFNet at the
-common 80% coverage coordinate. Both still retain substantial AD false negatives.
-The [five fixed error cases and preparation sensitivity](#investigate-real-slice-errors-and-preparation-sensitivity)
-show shared confident failures, architecture disagreement and seed-dependent
-boundary predictions. Preparation-associated differences remain a limitation.
-The [cost comparison and engineering recommendation](#weigh-computational-cost-against-reliability-and-accuracy)
-favor the calibrated CNN for this prototype. GFNet uses less measured GPU
-memory and faster batch forwards, but its reliability and accuracy are weaker.
-The completed [final TEST classification](#record-final-full-coverage-test-slice-classification)
-gives CNN accuracies of **82.77%, 80.68% and 81.96%**, and GFNet accuracies of
-**71.66%, 71.20% and 72.11%**, across seeds 3710--3712. CNN exceeds 80% in
-all three fits; GFNet does not meet the target. These are full-coverage slice
-results; classification accuracy alone does not establish confidence reliability.
-
-The V1 record is retained to explain the choices, measurements and rejected
-assumptions that led to V2. Its scan/patient prediction aggregation is historical
-and is absent from the current production files. The version sections identify
-which data unit and selection rule produced each reported result.
-
-## V1 development: superseded patient sampling and aggregated selection
-
-### Recover actual patients and audit the supplied image folders
-
-The source contains 30,520 grayscale JPEG slices from 1,526 acquisitions and
-680 patients. Each acquisition contributes twenty prepared slices. The number
-before the filename's underscore identifies an acquisition, not a patient;
-the `ADNI_..._S_...` token in source metadata supplies the actual patient ID.
-Labels map NC to 0 and AD to 1 (the source's AD metadata value is 2).
-
-The supplied train/test folders share 216 patients even though their scan IDs
-do not overlap. Different visits from the same person therefore cannot be
-assumed independent. The inventory checks diagnosis consistency, dimensions
-and recoverable identities before deciding how to divide the data. Folder
-names remain provenance and are never model inputs. These counts come from
-the saved inventory audit; no clinical diagnosis is inferred from a filename.
-
-### Separate patients into four reproducible data roles
-
-Patients, rather than images or acquisitions, define the partition boundary.
-Sorted AD and NC patient strata use one private PCG64(2026) stream. The fixed
-AD allocation is 133/22/22/44 and NC is 275/46/46/92 across TRAIN, TUNE,
-CALIBRATION and TEST. All visits and slices inherit their patient's role.
-
-This gives 408/68/68/136 patients and 18,560/2,860/3,180/5,920 slices.
-TRAIN updates weights, TUNE guides development, CALIBRATION fits probability
-or rejection parameters, and TEST measures the declared final procedure.
-Keeping all four roles in a manifest prevents a later model from quietly
-using a different population. Correlated slices still do not become thousands
-of independent patients merely because the network consumes individual images.
-
-### Load native grayscale slices without resizing
-
-The observed image canvas is width 256, height 240. The loader returns
-float32 tensors `[1,240,256]` by dividing grayscale values by 255, preserving
-native resolution, aspect ratio and the supplied brain preparation. Converting
-to RGB would repeat information, while square resizing would alter geometry.
-Neither is required for a scratch model.
-
-Only the image enters the network. Labels, patient IDs and relative paths
-remain separate metadata for accounting and analysis. The manifest fixes
-labels and partition membership; path resolution stays under the caller's
-data root. No pretrained normalization, cropping or augmentation is introduced
-in this initial baseline, so their effects cannot be confused with architecture.
-
-### Sample one acquisition per patient for the initial training design
-
-The initial rationale is to prevent frequent visitors from dominating the
-training stream. For every epoch, choose one acquisition per TRAIN patient,
-retain its twenty slices, and shuffle the concatenated slices. Independent
-PCG64 streams determine visit choice and slice order from seed and epoch.
-Reconstructing the sampler therefore does not consume the model's RNG.
-
-This choice gives 8,160 presentations and 128 batch-64 updates, including a
-final partial batch. It gives patients equal opportunity rather than giving
-all supplied slices equal opportunity. That distinction is a hypothesis with
-consequences for class and visit weighting, not an automatic improvement over
-ordinary image sampling. Evaluation loaders keep every declared slice.
-
-### Define scan probability means and patient-weighted metrics
-
-V1 extends image probabilities into an acquisition summary by averaging its
-twenty AD probabilities. A patient with V acquisitions gives each scan weight
-1/V, making each patient contribute total mass one. The weighted scan NLL is
-then intended to measure probability reliability without letting repeated
-visits dominate the metric.
-
-This operation has a different statistical unit from slice accuracy. Averaging
-can cancel a confident error against other slices, and applying NLL after an
-average is not the same as averaging slice NLL. The code keeps that weighted
-objective explicit rather than calling it image accuracy. This distinction
-will later become central to deciding whether V1 answers the assessment task.
-
-### Build local CNN stages with small convolution kernels
-
-The CNN provides a simple spatial baseline. Each stage uses two padded 3×3
-convolutions, GroupNorm and GELU, then 2×2 max pooling. Two small kernels add
-nonlinear processing while expanding local context gradually; pooling reduces
-later computation. GroupNorm avoids depending on large per-device batch
-statistics and has the same inference behavior with a short final batch.
-
-Four stages use 32, 64, 128 and 256 channels. Global spatial averaging and a
-256-to-2 linear head give raw NC/AD logits, with no softmax inside the model.
-The 1,173,154 parameters are much fewer than GFNet's later configuration, so
-this is a practical baseline, not a parameter-matched isolation of one operator.
-
-### Implement Fourier filtering on the rectangular patch grid
-
-A 240×256 image divided into 16×16 patches has a 15×16 grid, not a square.
-The GlobalFilter reshapes tokens to that explicit grid, applies orthonormal
-rfft2 over its two spatial axes, multiplies learned complex coefficients,
-then uses irfft2 with the original spatial size. The real FFT has a 15×9
-frequency grid; real and imaginary parameters are stored separately.
-
-The operation filters learned features, not MRI acquisition k-space. Taking
-sqrt(token_count) from a square-image reference would give the wrong geometry.
-FP32/complex64 and explicit axes make the mathematical adaptation inspectable.
-The implementation follows Rao et al.'s global-filter mechanism, with task
-adaptations for grayscale input and rectangular dimensions.
-
-### Embed slices and add residual global-filter blocks
-
-A stride-16 convolution projects each patch into 256 channels. Learned
-positional embeddings distinguish patch locations. Twelve independent blocks
-use the reference single residual path: normalization, global filter,
-normalization and a channel MLP expanding 256→1024→256 with GELU.
-
-Stochastic depth increases from zero to 0.1 across blocks, dropping whole
-residual branches per example during training. Evaluation disables it. The
-final LayerNorm, mean over the 240 within-image tokens and two-class head
-produce one prediction per slice. This token mean is an internal feature
-operation; it is distinct from averaging predictions from different slices.
-
-### Complete the scratch GFNet classifier and tensor-flow explanation
-
-The complete scratch model has 7,276,802 real trainable scalars. Linear and
-positional parameters use truncated-normal initialization; LayerNorm starts
-with unit scales and zero offsets. There is no class token, external encoder
-or pretrained checkpoint. Native rectangular geometry reaches the classifier
-without an image resize.
-
-![Native CNN and GFNet tensor flow](figures/model_architecture.png)
-
-The diagram shows implemented tensor sizes rather than an unmodified RGB
-paper figure. CNN emphasizes local spatial processing; GFNet mixes patch
-features globally. Differences in capacity and regularization remain part of
-the complete-system comparison and prevent a single-factor causal claim.
-
-### Configure AdamW and complete effective-batch updates
-
-The optimizer uses AdamW with betas (0.9,0.999), weight decay 0.01 for matrices
-and complex filters, and zero decay for biases, norm vectors and positional
-embeddings. Cross-entropy consumes raw logits and integer NC/AD targets.
-Global gradient norm clipping at 1.0 limits finite spikes; clipping frequency
-is diagnostic and is not itself proof of divergence or a smaller AdamW LR.
-
-The effective batch is 64. A short final batch uses its actual size, and
-sample-weighted epoch loss avoids giving the final small batch the same
-influence as a full batch. Python, NumPy and Torch seeds are explicit so model
-initialization and sampling can be compared under a stated configuration.
-
-### Save compact epoch boundaries and reproducible random state
-
-A complete boundary needs more than model weights: optimizer moments, global
-update cursor, epoch, selected best state, patience and Python/NumPy/Torch/CUDA
-RNG states determine continuation. A separate selected checkpoint supports
-inference without applying optimizer or training RNG state. Temporary-file
-replacement avoids publishing a half-written file as a completed boundary.
-
-The compact representation keeps scientific continuation state and readable
-configuration/history. Repeated validation scripts and operational submission
-receipts are not part of the learning algorithm. Historical training results
-remain associated with their saved execution sources; simplifying the code
-here does not rerun those experiments or prove byte-equivalent checkpoints.
-
-### Establish allocated A100 execution and initial resource feasibility
-
-Native FP32/complex64 execution uses an actual allocated A100 and deterministic
-operations with TF32 disabled. Hardware is identified from the visible device,
-not inferred from a partition label. Runtime records include software, device
-identity and thread settings; reproducibility remains scoped to that setup.
-
-Saved job 624327 passed the initial GPU phases. Batch 64's allocated training
-peaks were 8.697 GiB for CNN and 2.603 GiB for GFNet, against 39.081 GiB
-initially free. The preliminary batch-of-twenty inference benchmark measured
-median/p95 8.257/8.450 ms for CNN and 8.005/8.181 ms for GFNet. It included
-forward, softmax and probability mean, excluding image decode and transfer;
-it was not single-slice end-to-end latency or trained-model accuracy.
-
-### Record five-epoch pilots and exact boundary continuation
-
-Saved job 625831 completed five control epochs and a fresh-process continuation
-for each model. The saved model/optimizer/RNG/progress comparisons matched
-exactly. New ADNI work was 1,536 updates, 97,920 TRAIN and 34,320 TUNE
-presentations, counting only newly executed work rather than inherited histories.
-
-The measured steady epoch medians were 43.74 seconds for CNN and 42.37 seconds
-for GFNet under the sampled training recipe. Typical 60-epoch extrapolations
-were 43.93 and 42.59 minutes, with larger cautious estimates; they were not
-completed formal-fit durations. These results support native batch-64 execution
-and boundary resume, while classification capability and confidence reliability
-remain separate research questions.
-
-### Explain feasibility, research priorities and measured limits
-
-The feasibility review joins four considerations: patient-disjoint data,
-rectangular architecture implementation, measured A100 resources, and testable
-classification/reliability questions. The evidence supports an executable
-prototype; it does not support a clinical claim or an 80% accuracy guarantee.
-
-Confidence must be examined alongside correctness, including confident wrong
-predictions and false negatives. Classification, calibration, selective
-prediction, real error examples and computational cost should jointly inform
-an engineering recommendation. The one-page review and later tutor clarification
-are evidence documents, not a reason to call unfinished experiments complete.
-
-### Define a global cosine schedule and explicit NLL stopping policy
-
-The formal horizon is 60 sampled epochs, 7,680 updates. Warmup uses 640
-updates, followed by cosine decay to 1% of peak. The global update index,
-rather than the process's local epoch count, prevents resume from restarting
-the schedule. Candidate peaks are 1e-4, 3e-4 and 1e-3.
-
-Strict-best weighted scan NLL selects checkpoints. A separate patience anchor
-requires an improvement of at least 1e-4; small strict-best improvements do
-not continually reset patience. Stop after at least thirty epochs with twelve
-non-improving epochs, or at sixty. This makes selection and stopping reproducible,
-but it does not establish that weighted scan NLL is the right assessment target.
-
-### Integrate training, full TUNE evaluation and continuation
-
-The integrated fit reconstructs the patient's visit sampler for each epoch,
-updates on its 8,160 slices, and evaluates every one of the 2,860 TUNE slices
-with fixed weights and no gradients. TUNE records then produce both raw-slice
-diagnostics and the declared aggregated selection statistic.
-
-Resume restores the last completed boundary, optimizer, RNG, schedule cursor
-and controller rather than creating a replacement seed or fit. An invocation
-may run only a segment of the global horizon. This distinction matters when
-Slurm wall-time or storage limits require segmentation; a saved history must
-not be counted as new training when it is loaded again.
-
-### Record native A100 continuation of the formal training core
-
-Saved job 629388 passed six phases and four learning invocations on A100.
-It executed 768 new updates with 48,960 TRAIN and 17,160 TUNE presentations.
-Saved CPU comparisons found exact functional continuation; the recovery did
-not repeat learning to manufacture a successful comparison.
-
-CNN/GFNet maximum allocated memory remained about 8.697/2.603 GiB. Recorded
-complete epoch times included checkpoint persistence and differed from the
-earlier pilot timings. This is why the cost discussion separates measured
-scopes and avoids treating one preliminary median as a guaranteed full-fit
-or inference latency.
-
-### Reserve development fits and predeclare the LR selection barrier
-
-The experiment plan reserves six development fits: two architectures × three
-peaks with seed 3710. Only after all six finish does V1 select each model's
-minimum best weighted scan NLL, breaking exact ties by the declared LR order.
-Four conditional fits add seeds 3711 and 3712 at those selected peaks.
-
-The winning seed-3710 fit is reused, limiting the total to ten fits rather
-than retraining the favorable run. Patient populations and schedules must be
-consistent between candidates, including their complete declared horizons.
-These controls prevent accidental candidate replacement, but the scientific
-validity of the selection objective still needs examination.
-
-### Expose one direct fit command with explicit pause and resume
-
-The executable training entry chooses model, LR, seed and output directory,
-reads the fixed manifest and initializes its allocated runtime before model
-construction. Fresh output directories prevent silently mixing histories.
-The same command with resume continues the saved experiment and global horizon.
-
-The compact interface expresses one fit rather than embedding a scheduler
-framework inside the trainer. Cluster submission scripts, queues and recovery
-records stay external. A command that exits after a requested segment can
-leave an active paused fit; that is not a terminal training result and must
-not be treated as a completed LR candidate.
-
-### Fit scan temperature and a fixed rejection policy on CALIBRATION
-
-V1 fits one positive temperature per model/seed on CALIBRATION scan means,
-using the fixed 201-point geometric grid from 0.05 to 20 plus 1. The chosen
-value minimizes weighted NLL; exact ties prefer closeness to one, then smaller
-temperature. This changes probability scale, not the learned feature extractor.
-
-The highest confidence threshold reaching at least 80% patient-weighted scan
-coverage is then frozen, including all exact-confidence ties. Exact rational
-1/V masses avoid changing eligibility through floating-point summation.
-Evaluation applies the same temperature/threshold without refitting. Coverage
-is a retained-prediction proportion, not an accuracy requirement, and scan
-calibration does not establish calibrated slice probabilities.
-
-### Report classification denominators and raw confidence explicitly
-
-Raw slice accuracy is correct images divided by all images. Additional V1
-views average probabilities within scans and then patients, making their
-extra aggregation assumptions visible. Confusion matrices, class recalls,
-macro-F1 and AUROC reveal failures concealed by a single accuracy value.
-
-Raw confidence is the larger class probability. NLL, Brier score, reliability
-bins, high-confidence error/FN counts and confidence-based error detection
-address whether confidence is useful. ECE depends on binning and can look good
-for an uninformative classifier, so no one score substitutes for capability.
-The legacy V1 bins and clipped probability NLL remain identified with their
-saved results rather than being silently relabelled as a later metric recipe.
-
-### Define paired patient-cluster bootstrap comparisons
-
-The bootstrap resamples patients within diagnosis strata using shared
-PCG64(9001) draws for all six model/seed outputs. Each draw keeps a patient's
-visits and slices together, preserves multiplicity and applies fixed fitted
-policies. Slices from one patient therefore do not count as independent people.
-
-Two thousand replicates provide percentile intervals for individual seeds,
-mean-over-seeds results and paired GFNet-minus-CNN differences. Undefined
-replicates invalidate incomplete intervals rather than becoming zeros. These
-intervals are conditional on fitted models, calibration and this cohort; they
-do not include all retraining uncertainty or external-population shift.
-
-### Predeclare deterministic failure cases rather than choosing flattering examples
-
-Five sequential seed-3710 slots request GFNet false negatives, false positives,
-a near-boundary error, GFNet-wrong/CNN-correct, and the reverse disagreement.
-Once a patient is selected, all their visits are excluded from later slots.
-Exact score ties use patient and scan IDs; an unavailable category triggers
-its fallback immediately rather than being silently replaced later.
-
-The both-wrong fallback ranks GFNet's within-scan slice-probability population
-SD. Other error fallbacks rank the incorrect model's calibrated confidence.
-Raw decisions define errors; rounded calibrated decisions do not rewrite them.
-This rule makes examples reproducible, but model uncertainty does not establish
-that a case is medically ambiguous without clinical annotation.
-
-### Describe preparation confounding without claiming causal disease features
-
-The prepared slices have different index-start groups. A sensitivity report
-shows full support, individual start groups and the common 78/88 subset,
-keeping the fitted calibration policy fixed. Included visit counts determine
-subset patient weights; the original metadata are not overwritten.
-
-Per-class support and patient counts accompany results because a group with
-many NC images can have high overall accuracy for an unhelpful classifier.
-Subjects can appear in several preparation groups, so group counts are not
-additive independent cohorts. Neither a subgroup difference nor its disappearance
-proves that scanner/preparation confounding has been removed.
-
-### Load selected weights and materialize complete slice predictions
-
-Inference loads the selected best model, not the latest training boundary,
-and never applies optimizer or training RNG state. Evaluation/inference mode
-disables DropPath and gradients. The final partial batch remains included.
-Each output record contains one slice path, label, patient metadata, AD margin,
-probability, predicted class and raw confidence.
-
-Saving these records allows metrics, figures and statistical analysis to
-reuse the same model outputs without another image read or forward pass.
-Margins preserve ranking when probabilities saturate near zero or one.
-The prediction API initially accepts TUNE and CALIBRATION; an ordinary prediction
-flag does not automatically authorize a later final TEST evaluation.
-
-### Bind calibration records to the model and population that produced them
-
-A fitted temperature/threshold is meaningful only for its chosen model, seed,
-checkpoint and population. The calibration result therefore carries these
-identities separately from the provenance of a later evaluation. A temperature
-estimated for a scan mean is not transferred to individual slices by renaming it.
-
-The policy can be applied repeatedly to saved records without fitting again.
-Checks of table consistency establish arithmetic relationships, not that a
-model actually produced the table. Genuine allocated inference remains a
-separate source of evidence. This prevents a successful synthetic validator
-from being presented as a completed real-data calibration experiment.
-
-### Separate raw slice confidence from calibrated scan confidence
-
-The teacher's accuracy clarification makes the complete image denominator
-explicit: each input is one 2D slice. A high-confidence slice error is therefore
-an incorrect individual classification with raw confidence at least 0.90,
-including false negatives that remain confidently labelled NC.
-
-V1's raw-slice report exposes this assessed unit even though its older trainer
-still selects through weighted scan NLL. Calibration of scan means cannot be
-used as evidence that these raw slice confidences are reliable. This unresolved
-mismatch is retained in the record rather than hidden behind a calibrated
-aggregate or a favorable accepted subset.
-
-### Compose saved-output analysis without retraining or refitting
-
-The final analysis combines classification, confidence, fixed-policy selective
-performance, paired intervals, deterministic error candidates and preparation
-sensitivity from saved prediction tables. It materializes a stable keyed join
-once so input ordering cannot change the population or duplicate observations.
-
-Scientific composition remains distinct from model authentication. A pure
-report can be checked synthetically without Torch execution, but those checks
-do not establish genuine checkpoint inference or generalization. Saved real
-results must identify their own data role, model selection and calibration
-history before they support an engineering recommendation.
-
-### Allow the available A100 partitions while checking actual hardware
-
-The usable A100 partitions are a100, a100-grind, a100-test and comp3710.
-The star displayed by sinfo marks the default partition and is not part of
-the name a100-test. Longer fits exclude a100-test's twenty-minute QoS.
-Partition eligibility and current availability are separate scheduling facts.
-
-The runtime retains Slurm's assigned device and verifies an actual A100.
-Allocation names, selected-first partition lists and stored provenance must
-agree. Parser repairs concern operational metadata, not a scientific reason
-to loosen GPU policy or infer a device from a queued scheduling forecast.
-
-### Expose prediction and calibration interfaces without a permanent test framework
-
-The compact project is organized around data loading, model definitions,
-training, prediction/analysis and the report. Public functions document input
-shapes, data units and outputs; non-obvious Fourier, weighting and threshold
-operations have local explanations and references. Operational reports and
-model payloads stay outside the source directory.
-
-A direct prediction command saves reusable records, while a report command
-works from existing JSON on CPU. Calibration is a separate explicit operation,
-not a side effect of reporting. Meaningful functional commits explain these
-boundaries; large generated logs and repeated verification infrastructure do
-not improve the scientific presentation.
-
-### Freeze the initial ten-fit recipe and same-process thread configuration
-
-The first formal recipe fixes native grayscale input, no augmentation, both
-scratch architectures, three LR candidates, AdamW decay 0.01, batch 64,
-patient/scan sampling and weighted scan NLL selection. Winning seed-3710 fits
-are reused before training seeds 3711/3712. A fixed plan limits opportunistic
-changes but cannot rescue an unsuitable statistical objective.
-
-The same process that constructs and trains the model must set two intra-op
-and two inter-op Torch threads. A launcher that merely sets environment variables
-or runs a separate setup process does not guarantee that state. A100 execution
-and epoch segmentation were verified separately from final training accuracy.
-
-### Record the first completed CNN fit and its selected boundary
-
-CNN seed 3710 at LR 1e-4 stopped by patience at epoch 41. V1 selected epoch
-29 with weighted scan TUNE NLL 0.2800864185. Cumulative work was 5,248
-updates, 334,560 TRAIN and 117,260 TUNE presentations. These counts describe
-sample consumption, not independently instrumented JPEG decodes.
-
-The fit continued across allocations from saved complete boundaries. It
-establishes one completed development candidate, not an LR winner, a robust
-seed comparison or TEST success. Keeping best and latest separate matters
-because the selected model is earlier than the terminal training boundary.
-
-### Compare a second CNN learning rate before selecting a winner
-
-CNN seed 3710 at LR 3e-4 stopped at epoch 39, selecting epoch 27 with
-weighted scan TUNE NLL 0.2634022764. It executed 4,992 updates, 318,240
-TRAIN and 111,540 TUNE presentations. Its lower selected scan NLL is a
-candidate comparison under V1, not evidence that all slice-level measures improve.
-
-All three peaks and both architectures still need to complete before the
-predeclared barrier can choose additional-seed learning rates. Selecting early
-from two favorable candidates would change the plan and underestimate the
-uncertainty in architecture and optimization choices.
-
-### Retain scientific progress while simplifying checkpoint storage
-
-A failed wrapper left the third CNN candidate safely paused at epoch ten;
-the child training had completed but subsequent CPU authentication failed.
-Inspection traced the external failure to conflicting TorchDynamo guard-object
-registration, not an observed nonfinite training update or GPU execution fault.
-
-Repairing authentication preserves the existing fit and distinguishes completed
-learning from postprocessing. Storage constraints also motivate retaining the
-latest resumable and selected-best payloads while keeping compact histories.
-A 40 GB A100 is VRAM, not home-directory disk capacity. Operational cleanup
-must not silently erase the only state required for continuation or inference.
-
-### Complete ten formal fits and retain three seeds per architecture
-
-All six development and four additional fits completed. The V1 rule selected
-LR 3e-4 for both models; seed 3710's winning fits were reused alongside seeds
-3711 and 3712. CNN additional fits stopped at epochs 54 and 45, selecting
-42 and 33; GFNet's three selected fits all favored epoch one under scan NLL.
-
-This pattern is an early warning: a technically completed workflow is not a
-successful classifier. GFNet's later training can fit TRAIN while its declared
-validation probability metric deteriorates. The completed roster makes later
-comparisons well-defined, but no architecture is declared superior merely
-because all jobs and checkpoint handoffs finished.
-
-### Record real TUNE prediction and CALIBRATION execution
-
-Job 685251 completed six selected-model TUNE predictions and six CALIBRATION
-calls, totaling 36,240 presentations: 17,160 TUNE and 19,080 CALIBRATION.
-All saved runtimes used A100-PCIE-40GB on a100-8 with 2/2 threads. Per-call
-elapsed times include authentication and I/O, not just model forwards.
-
-Both seed-3710 integration gates passed before the later calls. Frozen
-calibration references and selected-checkpoint identities reconciled. This
-supports genuine execution of the V1 interfaces, but fitting a scan policy
-still does not establish slice calibration or attainment of slice accuracy.
-
-### Require an explicit six-model release for the final TEST evaluation
-
-A final TEST call identifies all six selected checkpoints and their already
-fixed calibration policies. It verifies the manifest and model/seed slot before
-construction; ordinary TUNE/CALIBRATION inference remains a separate interface.
-This makes a final evaluation an explicit action rather than a convenient flag
-used during development.
-
-Historical calibration provenance is kept apart from the new inference
-provenance. Repeated analysis reuses saved outputs rather than repeating TEST
-for a more favorable model or seed. Release plumbing controls execution, but
-does not make an inappropriate selection objective scientifically appropriate.
-
-### Record the first six-model TEST inference without calling it success
-
-Job 687977 completed six calls of 5,920 TEST slices, totaling 35,520
-presentations. Each used A100-PCIE-40GB on a100-5 with 2/2 threads. The
-saved elapsed times were about 753–779 seconds per call and included
-authentication and I/O; no independently measured decode count was recorded.
-
-Execution success only establishes that the released models produced the
-saved outputs. The next step is to evaluate the declared classification and
-confidence questions. Repeating training, changing a threshold or selecting
-one favorable seed after seeing TEST would answer a different procedure.
-
-### Analyze TEST accuracy together with overconfidence and selective errors
-
-CPU job 688685 analyzed the saved six-model outputs. CNN TEST slice accuracies
-were 82.40%, 79.49% and 81.17% (mean 81.02%); GFNet gave 54.39%, 58.70%
-and 54.75% (mean 55.95%). All six evaluations share the same 136 patients.
-CNN therefore did not consistently exceed 80%, and GFNet failed the target.
-
-CNN still made 515–851 high-confidence slice errors, including 347–558 false
-negatives, per seed. V1's fixed scan policies had CNN selective risk about
-11.33–12.36% versus GFNet 25.38–27.85%, at different observed coverages.
-These supplementary scan values cannot substitute for assessed slice accuracy.
-The evidence supports neither clinical use nor calling the project complete.
-
-### Diagnose objective mismatch before proposing more training
-
-The sampled TRAIN stream has AD share 32.60%, versus 51.08% across all TRAIN
-slices. Patient-uniform sampling therefore changes class and within-class visit
-weights. V1's weighted scan objective also differs from the task's image
-accuracy. Both can affect decisions without any model implementation bug.
-
-Partial histories support overfitting concerns, but missing trajectories must
-not be invented. A completed CUDA job, falling TRAIN loss and a low aggregated
-NLL do not show that the network classifies individual held-out images well.
-The next diagnostic is to read saved histories, not to assume that more epochs
-or a larger model will fix every failure.
-
-### Use all ten histories to separate fitting from generalization failure
-
-The saved-history inspection covered all ten fits without rerunning inference.
-GFNet learned TRAIN strongly; retrospective best TUNE slice accuracy was only
-62.87–67.94%, while final wrong-prediction confidence reached 95.8–97.4%.
-This supports a held-out generalization/overconfidence failure, not an untrained
-network, a universal single-class state or demonstrated FFT-axis defect.
-
-CNN seed 3711 illustrates selection mismatch: V1 chose epoch 42 with 80.70%
-slice accuracy and 288 high-confidence false negatives; retrospective epoch
-33 had 82.24% and 146. That is a TUNE diagnosis, not a changed old selection
-or a claimed TEST improvement. The run already reached a low-LR phase, so
-simply calling for longer training is weakly supported.
-
-![V1 GFNet trajectories](figures/v1_gfnet_histories.png)
-![V1 CNN trajectories](figures/v1_cnn_histories.png)
-
-### Reject a narrower GFNet screen as an insufficient solution
-
-A controlled width-128 GFNet screen completed fifteen sampled blocks, 1,920
-updates, 122,400 TRAIN and 42,900 TUNE presentations. Its highest TUNE slice
-accuracy was 63.99% at block three; its minimum NLL was 0.6894 at block two
-with 62.10% accuracy. No single checkpoint met its capability/continuation gate.
-
-Reducing width alone therefore did not solve the problem under that recipe.
-The checkpoints' best accuracy and best NLL cannot be combined into a fictional
-model. A CNN weight-decay probe was submitted separately; no result is invented
-here. The evidence favors correcting the task alignment and designing controlled
-new experiments rather than extending a failed configuration by default.
-
-## V2 development: equal-slice training and selection
-
-### V2.0 Replace the task-misaligned V1 objective and start fresh
-
-The instructor defines accuracy as correctly classified 2D test images divided
-by all test images. A scan or patient decision requires an additional voting
-or probability-aggregation rule and is outside this task. V1's weighted scan
-NLL therefore selects for a different output unit, despite its sound motivation
-to handle repeated visits and examine probability quality.
-
-The saved results show why that distinction matters. Patient-uniform sampling
-changes TRAIN's AD share from 51.08% to 32.60%; aggregated NLL can improve
-while individual-slice accuracy or AD recall worsens. CNN is not stable above
-80% across seeds, and GFNet remains far below it. Additional operational
-validation cannot correct that objective mismatch, so V1 is abandoned as the
-production training/evaluation design.
-
-V2 retains actual patient-disjoint partitions, native geometry and the two
-scratch architectures. It replaces visit sampling with complete-slice epochs,
-selects by complete TUNE slice accuracy with a slice-NLL tie break, and starts
-new fits with fresh weights and optimizer/RNG state. Old results remain labelled
-V1; they neither become V2 measurements nor disappear because code is rewritten.
-Confidence reliability stays a research priority, measured at the same image
-unit alongside classification rather than used to justify a substituted denominator.
-
-The same patient-disjoint manifest is retained. New code and fresh weights do
-not create a new independent cohort: V1 already evaluated its TEST population.
-V2 results must identify this earlier exposure and must not be described as
-a first-ever evaluation of previously unseen study patients.
-
-### Traverse every TRAIN slice once and retain all evaluation images
-
-The V2 loader samples every one of the 18,560 TRAIN slices once per epoch,
-using a private generator seeded by training seed plus epoch for order. It
-retains final partial batches in every role. There are 290 batch-64 updates
-per full TRAIN epoch instead of V1's 128 sampled updates.
-
-The change aligns training exposure with the assessed image population.
-Patients with more images now contribute more slices, as the image-level
-objective entails; patient IDs continue to prevent partition overlap. There
-is no patient or scan voting, probability averaging or patient-weighted loss.
-Native grayscale scaling remains [0,1] at this starting point, so the sampling
-change is not bundled with resizing, augmentation or pretrained normalization.
-
-### Align the trainer, schedule and selected checkpoints with slice accuracy
-
-The trainer now consumes complete-slice epochs and selects the maximum number
-of correct TUNE images out of the same 2,860 slices. Lower ordinary slice NLL
-breaks exact accuracy ties; a tie-only NLL improvement does not reset accuracy
-patience. The default ceiling is thirty full epochs, two warmup epochs, minimum
-twenty epochs and eight epochs without strict accuracy improvement.
-
-Thirty full epochs permit 556,800 TRAIN presentations, versus V1's 489,600
-at its sixty sampled-epoch ceiling. Epoch counts alone therefore do not compare
-training effort. The global schedule cursor still survives continuation.
-Separate latest/best payloads retain compact reproducible learning state.
-
-The predictor and trainer use the new slice checkpoint format, keeping V1
-weights out of these fresh runs. Legacy aggregation, scan calibration, scan
-rejection and their report composition are removed from production. Patient
-cluster resampling may later quantify uncertainty of slice metrics, but it
-must not create patient predictions or silently reintroduce a different
-selection denominator.
-
-### Preserve one reusable prediction record per individual slice
-
-Selected-best loading is retained with the V2 checkpoint identity. Inference
-returns one image record, preserving patient ID only as metadata. A nonnegative
-AD-minus-NC logit margin predicts AD; raw margins remain available when a
-probability rounds near one. This supports classification and confidence
-analysis from a single saved inference pass.
-
-The production inference entry accepts TUNE and CALIBRATION. No V2 TEST
-result follows from having an executable predictor, and final TEST evaluation
-is not enabled by a convenient partition flag. The record schema, complete
-population and fixed model state make later scientific comparison easier to
-read than repeated ad hoc inference commands.
-
-`predict_slices` runs inference mode over every image, including a short last
-batch. Each record contains path, patient ID, label, predicted class, AD logit
-margin, AD probability and raw confidence. Paths/IDs remain metadata. Margins
-preserve ordering when probabilities round near 0 or 1. `infer` accepts TUNE
-or CALIBRATION, checks manifest identity and can save these records as JSON.
-Plots and metrics can then reuse predictions without reading images again.
-Final TEST execution is not enabled by this interface.
-
-### Evaluate class balance and full-coverage slice performance
-
-Accuracy alone can conceal a model that preferentially predicts NC. V2 retains
-per-class precision/recall/F1, macro-F1, AD AUROC, a confusion matrix and stable
-logit-based NLL. The denominator always includes the complete supplied slice
-population, including difficult images and the last short batch.
-
-Undefined class ratios remain null. The 80% target is checked from correct
-and total image counts, not rounded display percentages, rejected-subset
-accuracy, scan votes or a caller assertion of grading success. These metrics
-support interpretation of a trained model; their availability does not prove
-that the target has been met.
-
-### Use slice confidence diagnostics and ten explicit reliability bins
-
-V2 evaluates raw slice confidence against actual image correctness. Brier,
-NLL, confidence on mistakes and high-confidence false negatives expose
-failures that higher accuracy can conceal. Uncertainty-based error detection
-uses negative absolute margin; it does not change the classification threshold.
-
-Reliability uses ten equal-width bins from 0.5 to 1, with sample-weighted ECE
-and explicit empty-bin support. This differs from the legacy V1 binning, so
-ECE values from the two reporting recipes must not be treated as directly
-identical measures. Neither raw confidence nor a smaller ECE establishes
-clinical reliability or an accuracy improvement.
-
-`reliability_report` uses ten equal-width confidence bins on `[0.5,1]`; lower
-edges are included, and the final bin includes 1. Empty means are null. ECE is
-the sum of `(bin_count / N) * abs(bin_accuracy - bin_mean_confidence)`.
-Sample weights prevent sparse bins from receiving equal influence to common
-ranges. `plot_reliability` draws the observed reliability and bin support from
-saved statistics, without another inference run. ECE depends on bin choice,
-so it accompanies NLL/Brier rather than replacing them. See
-[Guo et al., On Calibration of Modern Neural Networks](https://proceedings.mlr.press/v70/guo17a.html).
-
-### Record native A100 replay and batch-64 feasibility for V2
-
-The 24 October full-slice implementation check used two continuous updates and
-a separate one-plus-one resumed arm for each model on A100-PCIE-40GB, FP32 and
-2/2 threads. Eight updates consumed 512 TRAIN and 512 TUNE presentations.
-Both comparisons matched exactly. These are small implementation checks,
-not accuracy estimates or a new experiment performed to write this report.
-
-| Model | Peak allocated GiB | Peak reserved GiB | Allocated / initially free |
-|---|---:|---:|---:|
-| CNN | 8.697 | 13.891 | 22.25% |
-| GFNet | 2.593 | 2.834 | 6.89% |
-
-These measurements support batch 64 under the tested runtime. Allocator
-reservation differs from live tensor allocation. Neither establishes inference
-latency, clinical reliability or that every configuration will fit.
-
-### Record the first full-slice GFNet result and its remaining failure
-
-Job 693083 trained seed 3710, LR 3e-4, decay 0.01, batch 64 on all 18,560 TRAIN
-slices and evaluated every 2,860 TUNE slices. Accuracy patience stopped at
-epoch 20: 5,800 updates, 371,200 TRAIN and 57,200 TUNE presentations. These
-counts are not independently measured decodes. The saved result is distinct
-from the patient-sampled reference histories above.
-
-| Boundary | Online TRAIN accuracy | TUNE correct/total | TUNE NLL | HC errors / FNs |
-|---|---:|---:|---:|---:|
-| Epoch 1 | 62.76% | 1,684/2,860 (58.88%) | 0.796 | 183 / 1 |
-| Selected epoch 2 | 79.32% | 1,863/2,860 (65.14%) | 0.920 | 424 / 178 |
-| Final epoch 20 | 99.91% | 1,755/2,860 (61.36%) | 3.303 | 1,030 / 455 |
-
-![Full-slice GFNet learning and confidence diagnostics](figures/gfnet_development.png)
-
-NLL was lower at epoch 1, but accuracy-first selection chose epoch 2. Wrong
-prediction confidence rose from 82.13% at selection to 97.84% at the end.
-Learning TRAIN almost perfectly did not produce adequate TUNE discrimination
-or reliable confidence. The 80% target remains unmet; the curve is not TEST
-evidence. The run stopped before the 30-epoch cosine horizon, so it does not
-prove that every longer or different recipe would fail. Recorded epoch loops
-totalled 12.78 minutes including loading/metrics, excluding checkpoint saves
-and queue time; this is not pure inference latency.
-
-### Explain the active code interfaces and implemented mathematical choices
-
-The current submission uses five source/report files. `dataset.py` loads the
-manifest and images; `modules.py` defines CNN and GFNet; `train.py` owns the
-fit and boundary state; `predict.py` owns selected inference and saved-output
-analysis; this README explains decisions and evidence. Images, models, raw
-outputs and temporary verification scripts stay outside the source tree.
-
-The code headers identify purpose and inputs/outputs. Public functions state
-shape and unit contracts; comments explain the rectangular FFT, optimizer
-groups, sample-weighted losses and schedule cursor rather than narrating every
-Python statement. Related papers/implementations are cited next to their use.
-This addresses the recurring presentation feedback: readable working principles,
-concrete commits, interpretable diagrams and honest measured outcomes matter
-more than a large test or defensive-programming framework.
-
-#### Manifest loading
-
-`dataset.py` reads the existing CSV and selects TRAIN, TUNE, CALIBRATION or TEST.
-NC is 0 and AD is 1; the original AD metadata code 2 maps to classifier index 1.
-Rows retain patient IDs and relative paths. Duplicate images, conflicting
-patient partitions and invalid labels are rejected before image loading.
-These direct checks prevent a data error from being interpreted as a learning
-failure. The split is reused rather than regenerated for every experiment.
-The former metadata-audit test entry point is removed; it is not a prediction
-driver or a required part of the compact implementation.
-
-#### Native image geometry
-
-The loader returns float32 images `[1,240,256]`, labels, paths and patient IDs.
-Source JPEGs are grayscale with PIL width/height `(256,240)`. Dividing by 255
-scales the encoded pixels to `[0,1]`; no fitted statistics or RGB replication
-are needed. Preserving geometry avoids stretching a rectangular brain image
-to a square and keeps interpolation out of the initial model comparison.
-Unexpected image geometry is reported instead of silently transformed.
-
-This is a controlled starting point, not evidence that normalization or
-augmentation cannot help. JPEG intensities are not quantitative MRI values.
-The native dimensions also determine the GFNet patch grid introduced below.
-
-#### Sampling: match the assessed slice population
-
-`make_loader` shuffles every TRAIN slice once per epoch, without replacement.
-A private generator uses `seed + epoch`, separating data order from model RNG.
-Other partitions keep their order; all loaders retain the final partial batch.
-At batch 64, 18,560 TRAIN slices require 290 updates, with 64 slices in the last
-batch. TUNE's 2,860 slices require 45 batches, with 44 slices in its final batch.
-
-A saved patient/visit-sampling diagnosis found that AD's share of presented
-TRAIN examples changed from the full-slice 51.08% to approximately 32.60%.
-Uniform patient sampling was intended to reduce repeated-visit influence,
-but it changed class and visit weights relative to image-level assessment.
-The current loader therefore uses equal slice weights. This observation
-motivates the population choice; it does not prove that sampling alone caused
-the earlier performance deficit. Full epochs here are not comparable in work
-to the earlier 8,160-presentation training blocks.
-
-![Partition counts and preparation composition](figures/data_design.png)
-
-Preparation ranges differ in class composition. Patient separation addresses
-identity overlap, but does not establish that models learn disease anatomy
-rather than visual preparation cues. No scan-level classification is needed
-to recognize this confounding limitation.
-
-#### GFNet patch geometry
-
-`PatchEmbed` uses a one-channel convolution with kernel and stride 16. Both
-native dimensions divide exactly: 240/16=15 and 256/16=16. The output is a
-15×16 grid, flattened in row-major order to `[B,240,256]` tokens. Carrying the
-explicit grid prevents an inherited square-input assumption from reshaping
-rectangular features incorrectly.
-
-Patch size 8 would give 30×32=960 tokens, four times as many at a fixed width;
-patch size 16 gives 240. A no-padding size-32 projection would not cover the
-entire height. Size 16 is thus a geometry/resource compromise, not a proven
-accuracy optimum. We retain grayscale and native aspect ratio rather than
-copying RGB/square preprocessing from a reference implementation.
-
-#### GFNet block: normalization, residual path and regularization
-
-The block follows `x + DropPath(MLP(norm2(filter(norm1(x)))))`: one residual
-connection encloses the filtering/MLP branch. The MLP expands feature width
-fourfold, applies GELU, then projects back. The residual preserves a direct
-signal path while LayerNorm controls feature scales. Adding a second,
-Transformer-style residual would change this reference architecture.
-
-DropPath samples one branch gate per example during training and rescales
-survivors by their keep probability. Evaluation disables the gate. Its purpose
-is regularization, not a claim that uncertainty estimates follow from a
-single deterministic prediction. The implementation follows the
-[timm stochastic-depth operation](https://github.com/huggingface/pytorch-image-models).
-
-#### Optimization settings and reproducibility
-
-`train.py` combines explicit configuration, model construction, random seeds,
-AdamW and complete-slice learning with epoch boundaries. A configuration
-records model/LR, seed 3710, decay 0.01 and batch 64, together with the declared
-epoch horizon and stopping settings. A model is built from scratch after
-seeding Python, NumPy and Torch. Repeated seeds measure variation later; a
-fixed seed alone is not evidence of stable performance.
-
-AdamW uses betas `(0.9,0.999)`. Weight matrices receive decay; biases,
-normalization vectors and positional embeddings do not. Decoupling decay
-from adaptive gradient scaling makes its regularization role explicit.
-The decay 0.01 is a starting strength, not an experimentally established best.
-The optimizer grouping covers each trainable parameter exactly once.
-
-Saved histories showed falling TRAIN loss alongside worsening held-out NLL
-and confident errors, especially for GFNet. That motivates checking
-generalization and regularization rather than assuming that another optimizer
-step or a wider model must improve accuracy. It does not identify a single
-cause or prove that the current optimizer is optimal.
-
-Reference: [Loshchilov and Hutter, Decoupled Weight Decay Regularization](https://arxiv.org/abs/1711.05101).
-
-#### Checkpoint selection matches the assessment unit
-
-Select the largest number of correct TUNE slices; break an exact accuracy tie
-with lower slice NLL, then keep the earlier epoch. NLL-only tie improvements
-can select weights but do not reset accuracy patience. Stop after at least
-20 epochs when eight epochs give no strict accuracy improvement, or at the
-30-epoch ceiling. These are declared starting limits, not optimality claims.
-Aggregated scan/subject NLL and filtered-subset accuracy are excluded from
-selection. Probability quality remains a central research outcome even when
-it conflicts with this accuracy-first selection rule.
-
-#### Compact training boundaries
-
-A fresh `fit` saves `latest.pt` and `best.pt`, plus configuration, history and
-a small result summary. Latest includes optimizer/progress/RNG and the selected
-best state; best exports the selected model for later inference. Temporary-file
-replacement avoids publishing a partially written file. Keeping all epoch
-payloads had unnecessary storage cost; a 40 GB GPU does not provide 40 GB of
-home-directory storage. Source and manifest identities associate weights with
-their recipe without introducing a receipt or orchestration framework.
-
-#### Resume the same experiment
-
-Resume reads latest and restores model, AdamW, Python/NumPy/Torch/CUDA RNG,
-complete epoch, selected-best state and patience. Recreating the next loader
-with the saved epoch preserves its shuffle seed; the LR cursor also continues.
-`--epochs N` limits additional complete epochs in one invocation without
-changing the global `--max-epochs` horizon. This is continuation, not another
-fresh initialization. Saved CPU/A100 small-run comparisons support exact replay
-within the tested setup; cross-device bitwise equality is not established.
-
-### Document direct training, prediction and saved-report commands
-
-The interfaces follow the data flow: train on TRAIN/TUNE inside an A100
-allocation, load the selected checkpoint for inference, then analyze the saved
-records on CPU. Clear commands and output roles let the reader understand
-what an experiment does without following a separate orchestration framework.
-
-`dataset.py` loads slices, `modules.py` defines models and `train.py` fits them.
-Data, weights and outputs live outside the source directory. Use a fresh empty
-output directory or add `--resume` with the same configuration and manifest.
-Run the command inside an allocated A100 job; it sets the runtime before model
-construction. The measured runtime uses Python 3.11.15, Torch 2.13.0+cu130,
-NumPy 2.4.6 and Pillow 12.3.0.
-
-```bash
-python train.py --model gfnet --lr 0.0003 --seed 3710 \
-  --manifest /path/to/split_manifest.csv \
-  --data-root /home/groups/comp3710/ADNI --output /path/to/run
+# GFNet and CNN for Confidence-Aware ADNI Slice Classification
+
+COMP3710 · s4984179
+
+## Research Motivation: AD Imaging Patterns and Global Feature Modelling
+
+Structural MRI studies associate **Alzheimer's disease (AD)** with a distributed
+pattern of regionally selective atrophy. For example,
+[Dickerson et al. (2009)](https://pmc.ncbi.nlm.nih.gov/articles/PMC2638813/)
+identified cortical thinning across medial temporal, temporoparietal and
+precuneus regions. AD-related classification may depend on both local
+structural features and their spatial relationships within the image.
+
+**Global Filter Networks (GFNet)**, proposed by
+[Rao et al. at NeurIPS 2021](https://arxiv.org/abs/2107.00645), offer a direct
+mechanism for global spatial mixing. A two-dimensional FFT transforms learned
+features into the frequency domain, trainable complex filters adjust the
+frequency responses, and an inverse FFT returns them to the spatial grid.
+By the convolution theorem, the filter acts as a per-channel circular
+convolution spanning that grid. An MLP then combines channels through
+nonlinear processing. FFT gives the spatial mixing operation log-linear
+scaling in the number of positions.
+
+![Authors' original animation of GFNet](figures/gfnet_intro.gif)
+
+*GFNet's patch-based architecture and global filter operation. Original animation
+from the [authors' repository](https://github.com/raoyongming/GFNet).
+Copyright © 2021 Yongming Rao; [MIT license](figures/gfnet_intro.LICENSE.txt).*
+
+A **CNN** provides a useful baseline because its convolutional kernels emphasize
+relationships between neighbouring locations. Local patterns are combined
+through successive layers into larger-scale representations. GFNet instead
+mixes spatially separated features directly within each global filter layer.
+Within an MRI slice, direct global mixing could combine separated anatomical
+features when a local region alone is ambiguous.
+
+Both models are trained from scratch on the same ADNI slices. The comparison
+asks whether **direct global mixing or a progressively constructed local
+hierarchy** produces confidence that better reflects correctness, particularly
+near the model decision boundary. Selective prediction measures how errors
+change when low-confidence predictions are rejected. Slice accuracy and
+computational cost are also compared.
+
+## Data Partitioning: Preventing Patient Leakage
+
+**216 of the 331 patients in the supplied test folder also appear in the
+training folder: 65.3% of the original test patients.** The acquisition IDs
+are different, but source metadata links them to the same people.
+
+Different scans from one person retain related anatomical characteristics.
+A model trained on that person's images may exploit familiar individual
+features when classifying their other scans. The resulting accuracy and
+confidence can then give an optimistic impression of performance on new
+patients.
+
+I split **patients first**, keeping every acquisition and slice
+from a patient together. The complete dataset of 680 patients, 1,526
+acquisitions and 30,520 slices is retained; only partition membership changes.
+
+![Patient overlap in the supplied folders and the patient-level reassignment](figures/data_patient_split.png)
+
+*Left: 216 patients occur in both supplied folders. Right: each patient is
+assigned to one experimental role, together with all their scans and slices.*
+
+The new split uses four roles. TRAIN learns model weights; TUNE supports
+architecture and checkpoint selection. CALIBRATION is kept separate because
+the project also fits confidence scaling and rejection thresholds. TEST is
+reserved for comparing the selected models and policies.
+
+A **60/10/10/20 patient allocation** gives most of the cohort to learning
+while supporting these three evaluation tasks. Patients are stratified by
+diagnosis with seed 2026, and the same assignment is used for both
+architectures and every training seed.
+
+| Partition | Purpose | Patients (AD / NC) | Acquisitions | Slices |
+| --- | --- | ---: | ---: | ---: |
+| TRAIN | Learn model weights | 408 (133 / 275) | 928 | 18,560 |
+| TUNE | Compare recipes and select checkpoints | 68 (22 / 46) | 143 | 2,860 |
+| CALIBRATION | Fit temperature and rejection thresholds | 68 (22 / 46) | 159 | 3,180 |
+| TEST | Compare selected models and policies | 136 (44 / 92) | 296 | 5,920 |
+| **Total** | | **680 (221 / 459)** | **1,526** | **30,520** |
+
+## Model Design for Native MRI Slices
+
+Both models take a **240 × 256 single-channel image**, scaled to `[0,1]`.
+Keeping the native canvas preserves its aspect ratio and avoids interpolation
+before feature extraction. Unlike the paper's 224 × 224 RGB input, the
+network is adapted to the supplied grayscale rectangle, avoiding square
+resizing or redundant colour channels. The CNN builds a local hierarchy;
+GFNet adapts global filtering to the same rectangular geometry.
+
+### CNN: A Compact Local Feature Hierarchy
+
+Each stage contains two padded **3 × 3 convolutions**, followed by 2 × 2 max
+pooling. Stacking small kernels expands local context while adding a second
+nonlinear transformation, following the design principle used in
+[VGG (Simonyan and Zisserman, 2015)](https://arxiv.org/abs/1409.1556).
+Two stride-one 3 × 3 layers cover a 5 × 5 neighbourhood before pooling.
+Four stages reduce the native image to a 15 × 16 feature map, while channels
+increase from 32 to 256 as the spatial grid shrinks.
+
+| Stage | Output channels | Spatial size |
+| --- | ---: | --- |
+| Input | 1 | 240 × 256 |
+| CNN block 1 | 32 | 120 × 128 |
+| CNN block 2 | 64 | 60 × 64 |
+| CNN block 3 | 128 | 30 × 32 |
+| CNN block 4 | 256 | 15 × 16 |
+| Global average pooling | 256 | 1 × 1 |
+| Linear head | 2 | NC / AD logits |
+
+Convolutions use **GroupNorm with eight groups and GELU**. GroupNorm computes
+statistics within each example, keeping normalization independent of batch
+composition ([Wu and He, 2018](https://arxiv.org/abs/1803.08494)). Eight groups
+divide all four channel widths consistently.
+
+Global average pooling keeps the classifier compact, following the approach
+introduced in [Network in Network (Lin et al., 2014)](https://arxiv.org/abs/1312.4400).
+The final 256-to-2 head has **514 parameters**, compared with 122,882 for a
+flattened 15 × 16 × 256 feature map connected directly to two outputs. The
+complete CNN has **1,173,154 parameters**.
+
+### GFNet: Adapting Global Filtering to a Rectangular Grid
+
+The initial GFNet projects non-overlapping **16 × 16 patches** into 256
+channels. This patch size divides both image dimensions exactly, producing
+a **15 × 16 grid of 240 tokens**. It retains the paper's patch size but adapts
+the original 14 × 14 grid to the native MRI dimensions. The grid dimensions
+are carried explicitly through the Fourier layer.
+
+A real FFT reduces the stored frequency grid to **15 × 9**, with a learned
+complex response for each frequency and channel. The core implementation in
+[GlobalFilter](modules.py) is:
+
+```python
+grid = tokens.reshape(tokens.shape[0], height, width, self.dim)
+spectrum = torch.fft.rfft2(grid, dim=(1, 2), norm="ortho")
+weight = torch.view_as_complex(self.complex_weight.contiguous())
+grid = torch.fft.irfft2(
+    spectrum * weight, s=(height, width), dim=(1, 2), norm="ortho",
+)
 ```
 
-```bash
-python predict.py predict --checkpoint /path/to/best.pt \
-  --manifest /path/to/split_manifest.csv --data-root /home/groups/comp3710/ADNI \
-  --partition tune --output /path/to/results/tune.json
+The transform operates on the two spatial axes. The inverse uses the original
+height and width, so the tokens return to their rectangular layout. Learned
+responses let different layers and channels emphasize different frequency
+patterns, as illustrated in the authors' visualization below.
 
-python predict.py report --input /path/to/results/tune.json \
-  --output /path/to/results/tune-report.json \
-  --figure /path/to/results/tune-reliability.png
+![Learned filters from different layers of the authors' GFNet-XS model](figures/gfnet_author_filters.png)
+
+*Learned filters from the authors' GFNet-XS model, arranged by layer.
+Source: [official GFNet repository](https://github.com/raoyongming/GFNet#visualization).
+Copyright © 2021 Yongming Rao; [MIT license](figures/gfnet_intro.LICENSE.txt).*
+
+Each flat block retains the paper's single residual branch. Its core forward
+path in [GFNetBlock](modules.py) is:
+
+```python
+branch = self.mlp(self.norm2(self.filter(self.norm1(tokens))))
+return tokens + self.drop_path(branch)
 ```
 
-Prediction initializes the allocated A100 and 2/2 threads before construction.
-Reporting reads saved JSON on CPU and optionally exports PNG/PDF, without
-model execution. The reported setup uses Matplotlib 3.9.4. Use the same bins
-when comparing reliability. Correlated slices are not independent patients;
-diagnosis labels do not prove every slice visibly contains disease evidence.
-No completed calibration, rejection study, final TEST result or clinical
-recommendation is asserted by the availability of these commands.
-
-### Compare the completed full-slice CNN and GFNet development fits
-
-All four seed-3710 development jobs completed with exit 0 and accuracy patience.
-They share full-slice sampling and the same patient-disjoint TUNE population;
-these are V2 development results, not TEST results or multi-seed stability.
-
-| Model / peak LR | Job | Terminal / selected epoch | Correct / 2,860 | TUNE accuracy | TUNE NLL | HC errors / FNs |
-| --- | --- | --- | --- | --- | --- | --- |
-| gfnet-3710-lr3e-4 | 693083 | 20 / 2 | 1863 / 2,860 | 65.14% | 0.9195 | 424 / 178 |
-| cnn-3710-lr3e-4 | 693387 | 22 / 14 | 2414 / 2,860 | 84.41% | 0.5368 | 245 / 154 |
-| gfnet-3710-lr1e-4 | 693388 | 27 / 19 | 1910 / 2,860 | 66.78% | 2.7912 | 892 / 372 |
-| cnn-3710-lr1e-4 | 693389 | 22 / 14 | 2337 / 2,860 | 81.71% | 0.4581 | 175 / 113 |
-
-CNN's LR-3e-4 candidate has the highest TUNE accuracy, while LR 1e-4 has
-better NLL and fewer confident errors. GFNet's lower LR gains only 47 correct
-images while worsening NLL and high-confidence errors. Thus neither changing
-LR nor perfect TRAIN fitting establishes a reliable GFNet classifier.
-
-The next question is whether input scale, regularization or positional
-sensitivity limits generalization. The baseline is retained rather than
-quietly replaced. Any promising recipe still requires additional seeds and
-final image-level evaluation; a single favorable TUNE score is not completion.
-
-### Add controlled centering and mild TRAIN geometry experiments
-
-Reference-code comparison found no obvious missing residual or incorrect FFT
-axes in the current plain GFNet. It also found meaningful recipe differences:
-the reference uses stronger decay and different input processing. Its nominal
-LR is scaled by global batch/512, so copying a displayed LR without that step
-would not reproduce the optimization setting. Peer reports use different
-splits, preprocessing and sometimes scan aggregation; their reported 80%
-is not evidence of 80% under this slice protocol.
-
-V2 adds a fixed [-1,1] option as `2*x-1` and a separate mild TRAIN transform:
-rotation within ±5° and translation within ±2% per axis, bilinear interpolation
-and black fill. Each option is a hypothesis; neither is called a missing
-mandatory preprocessing step. The default [0,1] loader remains the baseline.
-Four TRAIN previews at transform limits showed no obvious brain clipping in
-those examples, which is not a population-wide diagnostic guarantee.
-
-### Bind experiment preprocessing to training, resume and prediction
-
-Input scaling and TRAIN augmentation are stored in the fit configuration and
-selected checkpoint. TUNE uses the same deterministic intensity scaling with
-geometry disabled; prediction reads that saved scaling. An older slice
-checkpoint without the new field keeps [0,1]. This prevents evaluating a
-centered-input model with the baseline input by accident.
-
-Exactly one factor changes in each new fit: GFNet-A centers input, GFNet-B
-raises decay 0.01→0.05, GFNet-C adds mild geometry, and CNN-A raises decay.
-All use LR 3e-4, seed 3710, batch 64 and the same 30-epoch schedule/stopping.
-Local and Rangpur focused checks each passed ten cases, including full slice
-coverage and exact continuous-versus-resumed synthetic learning with augmentation.
-Those implementation checks are not new real-data accuracy findings.
-
-### Submit four independent A100 optimization fits
-
-All four jobs were submitted once on 25 October. They are independent,
-allowing the scheduler to use whichever authorized A100 allocation becomes
-available. Each requests one GPU, two CPUs and two hours, excluding the
-twenty-minute a100-test partition.
-
-| Experiment | Job | Change | Saved 09:21 Brisbane observation |
-| --- | --- | --- | --- |
-| GFNet-A | 695012 | [0,1] → [-1,1] | Running, A100 on a100-5 |
-| GFNet-B | 695013 | decay 0.01 → 0.05 | Running, A100 on a100-8 |
-| GFNet-C | 695014 | TRAIN geometry only | Pending |
-| CNN-A | 695015 | decay 0.01 → 0.05 | Pending |
-
-Selection still uses complete TUNE slice accuracy, then ordinary NLL for
-exact ties. Class recalls and confident errors accompany the result. These
-are historical launch observations; later work may advance independently.
-No performance gain or completed epoch count is established by submission.
-Promising individual changes should be confirmed before combining them, and
-three-seed stability remains required before claiming a robust recipe.
-
-### Evaluate the first four controlled optimization fits
-
-All four jobs completed on A100 GPUs. Each row describes the single checkpoint
-selected by complete TUNE slice accuracy, with NLL breaking exact ties; metrics
-from different epochs are not combined.
-
-| Experiment | Job | Terminal / selected epoch | TUNE accuracy | Ordinary NLL | Confidence ≥0.90 errors / FNs |
-| --- | --- | --- | --- | --- | --- |
-| GFNet-A: centered input | 695012 | 20 / 4 | 65.91% | 1.3415 | 681 / 346 |
-| GFNet-B: decay 0.05 | 695013 | 20 / 12 | 64.51% | 2.9296 | 932 / 620 |
-| GFNet-C: mild TRAIN geometry | 695014 | 30 / 23 | 69.62% | 2.3910 | 734 / 414 |
-| CNN-A: decay 0.05 | 695015 | 29 / 21 | 83.32% | 0.9516 | 362 / 176 |
-
-Mild geometry improves GFNet by 4.48 percentage points over the matching
-65.14% baseline, but increases ordinary NLL and confident errors. Centering
-has little accuracy benefit; higher decay does not improve either model.
-These findings suggest that invariance helps GFNet, while overconfidence
-remains unresolved. They do not establish that the Fourier implementation is
-incorrect or that a particular architectural change will solve generalization.
-
-The next development round therefore retains CNN's decay-0.01 recipe and
-checks seeds 3711 and 3712 against the existing 84.41% seed-3710 result. GFNet
-uses the mild-geometry recipe as its comparison: one experiment changes the
-input feature extractor, and another independently smooths training labels.
-Every result remains TUNE development evidence; final TEST performance and
-three-seed robustness cannot be inferred from the best individual score.
-
-### Test overlapping local features before global filtering
-
-GFNet-D replaces only the non-overlapping 16x16 input projection with four
-3x3 stride-two convolutions, each followed by GroupNorm and GELU. Channels
-increase 1→32→64→128→256 while spatial sizes follow
-240x256→120x128→60x64→30x32→15x16. Padding one pixel preserves the full image
-canvas. Small overlapping kernels let neighboring structures interact before
-Fourier mixing; this tests a local-feature hypothesis suggested by CNN's
-stronger generalization, rather than assuming an FFT defect.
-
-The final 240 tokens still have width 256, so position embeddings, twelve
-Fourier blocks, stochastic depth and the classifier remain comparable. This
-variant has 7,599,330 parameters versus 7,276,802 for the patch baseline and
-is identified explicitly as GFNet with a convolutional stem. It retains mild
-TRAIN geometry, [0,1] pixels, LR 3e-4 and decay 0.01 from GFNet-C.
-`--gfnet-embedding conv` selects the variant; the checkpoint records the
-choice and prediction reconstructs it. Older checkpoints default to patch
-embedding. Native-size CPU checks confirmed the grid, finite gradients through
-both the stem and Fourier filters, and exact prediction after saved-weight
-reload; these checks establish executability rather than accuracy improvement.
-
-### Isolate label smoothing from architectural changes
-
-GFNet-E retains the patch input layer and mild TRAIN geometry of GFNet-C,
-adding only `--label-smoothing 0.05`. For two classes, the target distribution
-becomes 0.975 for the labelled class and 0.025 for the other class. This reduces
-the incentive for arbitrarily large training logits, a hypothesis motivated by
-the augmented baseline's 734 confident errors and NLL 2.3910. It is not a
-calibration procedure and does not guarantee either higher accuracy or honest
-confidence on new patients.
-
-Smoothing applies only to TRAIN cross-entropy. TUNE evaluation and checkpoint
-selection continue to use ordinary equal-slice accuracy and unsmoothed NLL;
-raw TRAIN NLL is also retained separately from the smoothed training loss.
-The default is zero, so the CNN seed checks keep their existing objective.
-The chosen smoothing amount is stored in checkpoints and checked on resume.
-
-Five temporary synthetic checks passed locally: native stem shape, gradients
-and selected-weight reload; legacy patch-checkpoint loading; option validation;
-independent smoothed-loss arithmetic with an unsmoothed final partial TUNE
-batch; and exact continuous-versus-resumed learning with TRAIN augmentation
-and smoothing. The checks use synthetic fixtures and establish implementation
-behavior, not real-data performance. Their scripts remain outside submission.
-
-### Launch independent seed, local-feature and smoothing experiments
-
-The four fits were submitted independently on 25 October, so an eligible
-A100 can run any available experiment. Each requests one A100, two CPUs and
-a two-hour limit; the production entry sets deterministic FP32 and 2/2 Torch
-threads. Both CNN fits use the original decay 0.01 and no geometry. Each GFNet
-fit uses mild geometry and changes one further factor relative to GFNet-C.
-
-| Experiment | Job | Seed | Distinguishing configuration | Saved 10:49 Brisbane status |
-| --- | --- | --- | --- | --- |
-| CNN baseline repeat | 695228 | 3711 | Original CNN recipe | Running, A100 on a100-3 |
-| CNN baseline repeat | 695229 | 3712 | Original CNN recipe | Running, A100 on a100-5 |
-| GFNet-D | 695230 | 3710 | Convolutional stem, no smoothing | Running, A100 on a100-8 |
-| GFNet-E | 695231 | 3710 | Patch embedding, smoothing 0.05 | Pending |
-
-The common settings are LR 3e-4, batch 64, 30 maximum epochs, two warmup
-epochs, minimum 20 epochs and accuracy patience eight. Every completed epoch
-uses 18,560 TRAIN and 2,860 TUNE slices, with 290 updates and final partial
-batches retained. TUNE accuracy determines selected weights; ordinary NLL
-breaks exact ties. Compare accuracy, class recalls and confident errors from
-the same selected checkpoint rather than choosing separate favorable epochs.
-
-Five focused checks passed on both local and Rangpur CPU runtimes before
-submission, including the new native-size model and exact synthetic resume.
-The three allocated processes recorded A100-PCIE-40GB and 2/2 threads; the
-pending fit had no established GPU. No complete epoch was present in this
-initial snapshot, so running work was not quantified. These are submission
-observations, not completed results. CNN repeats will test development-set
-seed stability; GFNet variants will test the two hypotheses, without assuming
-that either reaches 80% or fixes confidence reliability.
-
-### Distinguish generalization gains from increasing confidence
-
-The four follow-up jobs completed on A100s with normal accuracy-patience
-termination. Each row uses the same selected checkpoint for all its metrics.
-
-| Experiment | Job | Terminal / selected epoch | Correct / 2,860 | TUNE accuracy | Ordinary NLL | Confidence ≥0.90 errors / FNs |
-| --- | --- | --- | --- | --- | --- | --- |
-| CNN seed 3711 | 695228 | 26 / 18 | 2321 | 81.15% | 0.7542 | 344 / 144 |
-| CNN seed 3712 | 695229 | 24 / 16 | 2368 | 82.80% | 0.8817 | 342 / 193 |
-| GFNet-D: convolutional stem | 695230 | 27 / 19 | 2141 | 74.86% | 1.8350 | 654 / 460 |
-| GFNet-E: label smoothing | 695231 | 25 / 17 | 1983 | 69.34% | 0.8991 | 635 / 422 |
-
-CNN's fixed recipe now exceeds 80% for seeds 3710–3712 on TUNE (84.41%,
-81.15%, 82.80%; mean 82.79%). This supports seed consistency within this
-split, while confident errors and final TEST performance remain unresolved.
-It is reasonable to preserve this baseline while focusing the next fits on
-GFNet rather than changing both models again without a specific hypothesis.
-
-Convolutional embedding improves GFNet by 5.24 percentage points over the
-mild-geometry patch model, supporting the usefulness of local features in
-this run. However, epoch 11 already classifies 2131 slices correctly (74.51%)
-with NLL 1.3205 and 327 confident false negatives. Selected epoch 19 adds
-only ten correct slices, with NLL 1.8350 and 460 confident false negatives.
-Final online TRAIN accuracy reaches 99.91%. More fitting is therefore not
-sufficient evidence of better generalization or more trustworthy confidence.
-
-Smoothing lowers the patch model's NLL from 2.3910 to 0.8991 but leaves its
-accuracy near 69%. Its interaction with the convolutional stem remains
-unknown. The next comparison asks whether retaining the local features but
-reducing the Fourier/MLP capacity, smoothing the targets, or lowering LR can
-improve this trade-off. Accepted selections above remain unchanged; trajectory
-comparisons motivate new experiments rather than retrospectively replacing
-checkpoints. GFNet still needs 147 additional correct TUNE slices to reach
-80%, and any promising recipe will require further seeds before final use.
-
-### Reduce Fourier-block capacity without changing the token representation
-
-GFNet's local stem is retained because its controlled comparison improved
-TUNE accuracy. The next capacity experiment changes the number of Fourier/MLP
-blocks from twelve to six while retaining width 256, the 15x16 grid, input
-stem, position embeddings, normalizations and classifier. Construction gives
-4,025,058 parameters for six blocks versus 7,599,330 for twelve. Reducing the
-number of repeated transformations tests whether the current model memorizes
-the available training subjects more readily than it learns transferable
-features; it does not assume that the smaller model must be better.
-
-`--gfnet-depth` controls construction and is saved in configuration and both
-checkpoint forms. Prediction reconstructs the saved depth; missing fields in
-older selected checkpoints mean twelve. DropPath still increases from zero
-to 0.1 across the selected depth, avoiding an accidental reduction of maximum
-regularization when the layer count changes. The default remains twelve;
-seeded patch and convolutional defaults matched the previous implementation's
-state tensors exactly in CPU checks.
-
-Eight focused local checks passed, including native six- and twelve-block
-forward/backward execution, finite stem/Fourier gradients, exact selected-
-weight reload, legacy loading, CLI argument forwarding, ordinary TUNE loss
-with label smoothing enabled for TRAIN, and exact synthetic augmented resume.
-Changed-depth resume is rejected by the existing configuration comparison.
-Temporary tests stay outside the submission; these checks establish execution
-and reproducibility, not a new accuracy result.
-
-### Separate depth, smoothing and learning-rate effects
-
-The next four fresh fits use the convolutional stem, mild TRAIN geometry,
-[0,1] pixels, seed 3710, batch 64 and weight decay 0.01. They retain the same
-30-epoch horizon, two warmup epochs, minimum 20 and accuracy patience eight.
-
-| Fit | Fourier blocks | TRAIN smoothing | Peak LR | Main comparison |
-| --- | --- | --- | --- | --- |
-| GFNet-F | 12 | 0.05 | 3e-4 | Existing D: add smoothing to the stem model |
-| GFNet-G | 6 | 0 | 3e-4 | Existing D: reduce depth only |
-| GFNet-H | 6 | 0.05 | 3e-4 | G: smoothing effect; F: depth effect |
-| GFNet-I | 12 | 0.05 | 1e-4 | F: lower LR only |
-
-Existing D together with F/G/H forms a two-by-two depth/smoothing comparison,
-so D does not need to be repeated. H tests whether a smaller representation
-benefits differently from soft targets. I checks a lower LR on the smoothed
-stem model; the plain patch model's earlier LR result cannot determine the
-effect after these architectural and objective changes. Separate comparisons
-make a negative result informative rather than attributing a combined change
-to whichever explanation appears attractive afterward.
-
-All fits start with new weights. Complete equal-slice TUNE accuracy still
-selects the checkpoint, with ordinary NLL breaking exact ties. The target is
-2,288 correct of 2,860 slices for at least 80%, or 2,289 for strictly above
-80%. AD/NC recall and confident errors must accompany that score. Lowering
-confidence alone does not prove better error identification; matched-coverage
-risk and calibration require their own later evaluation. A promising recipe
-will need seeds 3711/3712. If this bounded comparison remains inadequate, a
-hierarchical GFNet architecture is a separate next hypothesis rather than an
-unlimited expansion of the present parameter grid.
-
-### Submit the bounded capacity and regularization comparison
-
-The four fresh GFNet fits were submitted once on 25 October after the same
-eight focused checks passed on Rangpur CPU as well as locally. Source copies,
-manifest identity, batch arguments and shell syntax were checked before
-submission. Each job requests one A100, two CPUs and two hours across the
-eligible comp3710, a100 and a100-grind partitions. Jobs are independent, so
-actual execution order depends on available allocations rather than a chained
-training dependency.
-
-| Experiment | Job | Blocks / smoothing / peak LR | Saved 13:30 Brisbane status |
-| --- | --- | --- | --- |
-| GFNet-F | 695715 | 12 / 0.05 / 3e-4 | Pending; nodes unavailable/reserved |
-| GFNet-G | 695716 | 6 / 0 / 3e-4 | Pending; priority |
-| GFNet-H | 695717 | 6 / 0.05 / 3e-4 | Pending; priority |
-| GFNet-I | 695718 | 12 / 0.05 / 1e-4 | Pending; priority |
-
-No allocation, GPU identity, epoch or metric existed at this observation;
-forecast node/start values do not establish actual execution. The maximum
-budget is 30 complete epochs per fit, with 18,560 TRAIN and 2,860 TUNE slices
-and 290 updates per epoch. Early stopping can reduce that work. Submission
-itself does not establish improvement. The intended decision remains whether
-capacity reduction and/or smoothing improve the stem model's slice accuracy
-and reliability sufficiently to justify multi-seed confirmation.
-
-### Capacity reduction helps, but the flat representation still overfits
-
-All four capacity-round jobs completed normally through accuracy patience.
-The comparisons below use each run's selected checkpoint over the same 2,860
-TUNE slices; high confidence means a raw maximum probability of at least 0.90.
-
-| Fit | Job | Terminal / selected epoch | Correct | Slice accuracy | NLL | AD recall | Confident errors / FNs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| F: twelve blocks, smoothing 0.05 | 695715 | 25 / 17 | 2157 | 75.42% | 0.7882 | 57.42% | 584 / 477 |
-| G: six blocks, no smoothing | 695716 | 20 / 7 | 2168 | 75.80% | 0.9047 | 66.82% | 409 / 299 |
-| H: six blocks, smoothing 0.05 | 695717 | 29 / 21 | 2102 | 73.50% | 0.8652 | 54.70% | 635 / 509 |
-| I: twelve blocks, smoothing 0.05, LR 1e-4 | 695718 | 21 / 13 | 2122 | 74.20% | 0.7742 | 63.86% | 511 / 341 |
-
-G improves on the preceding twelve-block unsmoothed D by 27 correct slices,
-0.94 percentage points, and 161 fewer confident false negatives. It remains
-120 correct slices short of exactly 80%. Its selected epoch seven has online
-TRAIN accuracy 94.02% and TUNE accuracy 75.80%; at epoch twenty these become
-99.45% and 70.63%. TUNE NLL increases from 0.9047 to 2.5903 and confident
-false negatives from 299 to 569. Online augmented training and fixed-weight
-validation differ, but this direction across epochs supports overfitting and
-confidence deterioration rather than assuming that more fitting is enough.
-
-Smoothing substantially improves D's NLL when used in F, yet AD recall falls
-and confident false negatives increase from 460 to 477. Smoothing the smaller
-model, H versus G, reduces accuracy and increases confident errors. I's lower
-LR also does not improve accuracy over F. These controlled, single-seed
-results do not support adopting smoothing or a lower LR indiscriminately.
-
-The earlier overlapping stem gained 5.24 percentage points, whereas reducing
-Fourier depth added less than one point. The next hypothesis is therefore to
-process finer spatial features before all four downsampling operations have
-finished. A compact hierarchical GFNet can alternate Fourier processing and
-local downsampling. This is a new architecture study, not evidence that the
-current rectangular FFT is incorrect. The source comparison found no obvious
-FFT-axis or residual-path defect, and hierarchy is not guaranteed to reach 80%.
-CNN's three-seed TUNE recipe is retained while its confident errors and final
-TEST performance remain unresolved. The known prior TEST exposure also remains
-a limitation of this reused cohort, regardless of newly initialized weights.
-
-### Process fine spatial structure before hierarchical downsampling
-
-The new `GFNetPyramid` is a compact three-stage adaptation of the reference
-GFNetPyramid. The original uses four stages; this version retains native
-240x256 grayscale images and stops at a 15x16 grid, avoiding a fourth
-512-channel stage and an odd-height merge. It reuses the overlapping 3x3,
-stride-two convolution/GroupNorm/GELU components. Two convolutions create a
-60x64 grid, Fourier processing follows, and subsequent convolutions and
-Fourier stages produce 30x32 and 15x16 grids.
-
-| Stage | Spatial grid | Width | Compact / extended block counts |
-| --- | --- | --- | --- |
-| Fine features | 60x64 | 64 | 2 / 2 |
-| Intermediate features | 30x32 | 128 | 2 / 2 |
-| Coarse features | 15x16 | 256 | 2 / 4 |
-
-Early widths 64/128 limit the cost of processing finer grids, while final
-width 256 retains the previous classifier scale. The two variants contain
-2,926,562 and 4,118,498 trainable parameters. Each block keeps spatial
-orthonormal FFT, explicit inverse dimensions and the existing single residual
-branch. Per-channel LayerScale starts at 0.001, following the reference
-Pyramid constructor, and DropPath increases across all stages from zero to
-0.1. The final within-image token mean produces two class logits. No operation
-combines different slices or turns patient metadata into a prediction.
-
-This changes hierarchy, width distribution and residual scaling together;
-a comparison with the flat G model evaluates the architectural package, not
-the isolated causal contribution of each component. The next controlled
-comparison varies only the final-stage depth and LR within this architecture.
-Reference: [GFNetPyramid source](https://github.com/shakes76/GFNet/blob/a0c7aefaf7109ceed284df77b415046466e5bc38/gfnet.py).
-
-Temporary local CPU checks exercised both native-size variants with two
-synthetic slices each: stage shapes, finite backward gradients through every
-Fourier filter and LayerScale, deterministic evaluation, and zero-scale
-residual identity passed. Seeded state tensors and stochastic-depth schedules
-of the existing patch12, conv12 and conv6 models matched the previous source.
-These checks used no optimizer or real images and do not establish accuracy.
-
-### Bind hierarchical configuration to training and selected-weight inference
-
-`train.py --model gfnet_pyramid --pyramid-depths 2 2 2` selects the compact
-variant; `--pyramid-depths 2 2 4` expands the last stage. The three depths are
-saved with the optimizer/latest state and selected weights. Prediction builds
-the same hierarchy from the selected checkpoint. Existing flat selected
-checkpoints retain their saved embedding/depth and use historical defaults
-when those fields are absent. Flat-only switches are rejected for the
-hierarchical model so that an experiment cannot silently request an unused
-embedding or layer count.
-
-The same trainer, all-slice sampling, unsmoothed TUNE evaluation and
-correct-count/NLL-tie selection serve the new model. LayerScale vectors join
-biases and normalization parameters in the no-decay AdamW group; feature
-matrices and Fourier weights retain the configured decay. Configuration
-binding rejects resuming with a different stage-depth sequence.
-
-Five temporary CPU integration checks passed: CLI forwarding/configuration,
-exact selected-weight reconstruction of both variants, old flat-checkpoint
-loading, optimizer groups and slice selection, and exact synthetic augmented
-continuous-versus-resumed training. The last check uses a tiny dropout model
-to exercise optimizer/RNG/progress restoration and rejects changed Pyramid
-depths before continuation. It performs eight tiny AdamW updates across the
-two arms; native Pyramid reload checks use no optimizer. No ADNI image,
-CALIBRATION or TEST data is used by these checks. Native A100 memory and
-execution cost still need measurement before choosing launch resources.
-
-### Compare coarse-stage depth and LR within the new hierarchy
-
-![Native rectangular hierarchical GFNet](figures/gfnet_pyramid.png)
-
-The new study holds the fine and middle stages at two blocks each. It varies
-only coarse-stage depth (two or four blocks) and peak LR (3e-4 or 1e-4):
-
-| Fit | Stage depths | Peak LR | Direct comparison |
-| --- | --- | --- | --- |
-| P1 | 2 / 2 / 2 | 3e-4 | Compact hierarchical reference |
-| P2 | 2 / 2 / 2 | 1e-4 | P1: lower LR only |
-| P3 | 2 / 2 / 4 | 3e-4 | P1: two additional coarse blocks only |
-| P4 | 2 / 2 / 4 | 1e-4 | P2: coarse capacity; P3: LR |
-
-The lower LR is tested again because residual scaling and stage-wise widths
-change the optimization problem; its failure in the flat smoothed I model
-cannot decide its effect here. Smoothing is set to zero after the six-block
-comparison showed poorer accuracy and more confident false negatives with it.
-Existing G is retained as a saved architectural reference without repeating
-its training. The extended hierarchy's 4.12 million parameters are close to
-G's 4.03 million, providing a useful approximate-capacity comparison alongside
-the smaller 2.93-million model. It is not an exact parameter-matched ablation.
-This bounded factorial study avoids simultaneously introducing new losses,
-input scales, class weights or additional attention mechanisms.
-
-All four fits use new weights and seed 3710, the existing patient-disjoint
-manifest, every TRAIN slice once per epoch, [0,1] pixels and the same mild
-TRAIN geometry. Keep batch 64, AdamW decay 0.01, thirty maximum epochs, two
-warmup epochs, minimum twenty and accuracy patience eight. Ordinary complete
-TUNE slice accuracy selects weights and NLL only breaks exact ties. Each
-fit's ceiling is 8,700 updates, 556,800 TRAIN and 85,800 TUNE presentations;
-early stopping may reduce it. A recipe above 80% still requires seeds
-3711/3712 before a stability claim, and confident errors remain part of the
-research question regardless of total accuracy.
-
-### Measure native A100 cost and submit the four fresh fits
-
-The two native variants passed the short synthetic batch-64 A100 probe,
-job 696137, exit 0:0 in thirteen seconds. Its recorded allocation was an
-A100-PCIE-40GB on a100-b in a100-test, with deterministic FP32 and 2/2
-threads. Both variants used the same production model/optimizer construction;
-each performed two synthetic updates and an evaluation forward, then removed
-its disposable synthetic checkpoint files.
-
-| Stage depths | Parameters | Peak allocated / reserved | Second synthetic update | Synthetic latest / best bytes |
-| --- | --- | --- | --- | --- |
-| 2 / 2 / 2 | 2,926,562 | 3.75 / 3.93 GiB | 0.120 s | 46,948,939 / 11,729,916 |
-| 2 / 2 / 4 | 4,118,498 | 4.18 / 4.40 GiB | 0.139 s | 66,048,331 / 16,503,616 |
-
-These are a small memory/cost probe, not an inference benchmark or a measured
-real-data epoch estimate. Image decoding, data transfer, checkpoint persistence
-and cold startup add costs. Batch 64 fits comfortably, and the two-hour limit
-is retained with substantial allowance over the synthetic compute cost and
-previous real-data runs. Measured full checkpoint sizes allow approximately
-0.474 GiB for the four fits' latest/best files plus simultaneous temporary
-latest saves; an additional 1 GiB is required at submission. Available storage
-was 3.898 GiB. No old experiment payload was removed to make this round fit.
-
-The native module checks and five integration checks also passed on Rangpur's
-CPU runtime before the probe and submission. The four source files and pinned
-manifest were checked on deployment and again by the submission entry. All
-four training jobs were then submitted exactly once on 25 October 2026:
-
-| Fit | Job | Stage depths / peak LR | Saved 15:28 Brisbane observation |
-| --- | --- | --- | --- |
-| P1 | 696161 | 2 / 2 / 2; 3e-4 | Pending; nodes unavailable/reserved |
-| P2 | 696162 | 2 / 2 / 2; 1e-4 | Pending; priority |
-| P3 | 696163 | 2 / 2 / 4; 3e-4 | Pending; priority |
-| P4 | 696164 | 2 / 2 / 4; 1e-4 | Pending; priority |
-
-Each requests one A100, two CPUs and two hours across comp3710, a100 and
-a100-grind. The twenty-minute test partition was useful for the probe and is
-excluded from these full fits. At this observation no actual training GPU,
-completed epoch or metric was established; forecasts are not allocations.
-The independent jobs can start in scheduler order. Their later trajectories
-will determine whether hierarchy improves generalization and confident
-errors. Submission itself supplies no evidence that the 80% target is met.
-
-### Hierarchy did not resolve the generalization gap
-
-All four P1--P4 jobs completed with exit 0 and normal accuracy-patience stops.
-The selected checkpoints give the following results over all 2,860 TUNE slices:
-
-| Fit | Selected / terminal epoch | Slice accuracy | NLL | AD recall | Confident errors / FNs |
-| --- | --- | --- | --- | --- | --- |
-| P1: 2/2/2, LR 3e-4 | 14 / 22 | 73.01% | 2.0468 | 55.83% | 624 / 493 |
-| P2: 2/2/2, LR 1e-4 | 2 / 20 | 72.90% | 0.5658 | 78.56% | 0 / 0 |
-| P3: 2/2/4, LR 3e-4 | 14 / 22 | 74.02% | 2.2614 | 62.27% | 642 / 443 |
-| P4: 2/2/4, LR 1e-4 | 12 / 20 | 73.46% | 1.2533 | 53.79% | 493 / 425 |
-
-None exceeds the flat six-block G model's 75.80%. P2's zero confident errors
-apply to only 31 predictions above the 0.90 threshold, 1.08% of TUNE; this
-does not establish useful error detection or calibration. Final online TRAIN
-accuracy reaches 96.64--99.84%, while final TUNE accuracy is 66.64--71.78%.
-For P3, TUNE NLL rises to 4.3301 and wrong-prediction confidence to 97.37%.
-These trajectories support a persistent generalization/overconfidence problem.
-Online training includes augmentation and changing weights, so its accuracy
-is not a strictly matched evaluation of the training population.
-
-The broader twenty-fit development record gives the strongest support to
-local feature extraction: mild geometry raised the original GFNet from
-65.14% to 69.62%, and the convolutional stem raised it to 74.86%. Reducing
-twelve blocks to six then reached 75.80%. Increasing decay to 0.05, applying
-label smoothing, lowering LR and introducing this hierarchy did not provide
-a consistent accuracy/reliability improvement. This is a reason to retain G
-as the next reference rather than continue increasing architectural complexity.
-The hierarchy changes several components together, so its results do not
-identify a unique cause or demonstrate a defect in the spatial FFT.
-
-### Test interpolation regularization with matched slice controls
-
-The next hypothesis concerns memorization under hard-label training. MixUp
-interpolates two TRAIN images and their corresponding labels using the same
-coefficient. Its original study motivates smoother behavior between examples;
-subsequent work studies calibration benefits. Those results motivate an
-experiment, not a promise of improvement on medical slices. The teacher's
-GFNet training reference also includes MixUp/CutMix, whereas these compact
-baseline fits have used neither. Start with MixUp alone at alpha 0.2, a
-moderate unvalidated choice, so that its effect can be interpreted without
-simultaneously introducing CutMix, a new architecture or intensity processing.
-
-| Planned fit | Model / seed | Intervention | Matched comparison |
-| --- | --- | --- | --- |
-| M1 | Convolutional GFNet, six blocks / 3710 | MixUp alpha 0.2 | Saved G / 3710 |
-| M2 | Same GFNet / 3711 | No MixUp | Second-seed control for G |
-| M3 | Same GFNet / 3711 | MixUp alpha 0.2 | M2, same seed |
-| M4 | Existing CNN / 3711 | MixUp alpha 0.2 | Saved CNN / 3711 |
-
-CNN's saved three-seed TUNE accuracies are 84.41%, 81.15% and 82.80%, but
-their selected models still make 245, 344 and 342 confident errors. Choosing
-3711 for this first intervention targets its weakest observed development
-seed; success there cannot substitute for subsequent three-seed confirmation.
-
-Keep LR 3e-4, decay 0.01, batch 64, [0,1] inputs, all TRAIN slices per epoch,
-the fixed patient-disjoint manifest, thirty maximum epochs, two warmup epochs,
-minimum twenty and accuracy patience eight. GFNet retains mild geometry;
-CNN retains its existing no-geometry setting. Label smoothing is zero.
-MixUp changes the training objective only: unmodified TUNE slices and genuine
-labels still select by correct count, with ordinary NLL breaking ties.
-The 80% criterion retains all slices in its denominator. Confidence metrics
-must include high-confidence coverage as well as errors/FNs, so merely making
-the model less confident cannot be mistaken for better error identification.
-
-The two GFNet seeds provide paired evidence before another recipe is expanded
-to seed 3712. A failure to improve them should prompt a focused error/component
-investigation, rather than an open-ended MixUp grid. Calibration cannot repair
-raw accuracy because positive temperature scaling leaves argmax unchanged.
-All development results remain TUNE results; repeated TUNE searches and the
-previous exposure of this cohort's TEST population limit final interpretation.
-
-### Keep the MixUp objective distinct from genuine slice evaluation
-
-`train.py --mixup-alpha 0.2` now draws one Beta(0.2,0.2) coefficient and one
-random permutation for each TRAIN batch. It forms a convex image mixture and
-minimizes the matching weighted sum of the two cross-entropies. Pairing reuses
-the already loaded batch; it does not open additional images or replace the
-all-slice loader with a sampled stream. The final partial batch is retained.
-Alpha zero takes the original path without drawing any mixing randomness.
-
-Mixed images have no single genuine diagnosis, so their history contains
-`objective: mixup`, the average mixed loss and source-slice/update counts;
-TRAIN accuracy and NLL are null. Logging an accuracy against only the first
-label would produce a misleading learning curve. TUNE retains ordinary,
-unmixed slice accuracy/NLL and all existing confidence diagnostics, even when
-the training configuration enables MixUp. Label smoothing remains zero in
-this study, keeping the intervention confined to image/label interpolation.
-
-The MixUp coefficient uses NumPy RNG and its permutation uses Torch RNG.
-Both are already captured in latest checkpoints along with augmentation and
-model randomness. The configuration saves alpha and rejects a changed value
-on resume. Older checkpoints without this field mean alpha zero; selected
-weight inference does not mix inputs or need a new network implementation.
-
-Seven temporary local CPU checks passed: exact interpolation, loss/gradient
-agreement with an independent two-label calculation, partial-batch coverage,
-unchanged ordinary evaluation, alpha-zero equality with the previous source,
-CLI/configuration binding, exact augmented continuous/resumed training and
-native CNN/GFNet finite gradients. The checks used sixteen tiny AdamW updates
-and synthetic images only. This verifies the implementation, not the expected
-ADNI accuracy benefit. Target-runtime checks precede deployment for training.
-
-### Retain the selected TUNE evidence without another inference pass
-
-Each epoch already computes aligned TUNE paths, patient IDs, true labels and
-raw logit margins. Previously `fit` discarded those records after calculating
-summary metrics. The selected checkpoint now retains its records and exports
-them with the selected epoch, metrics and source/data/configuration identity
-to `best-tune.json`. This supports later slice-level confidence and failure
-analysis without repeating inference merely to recover lost predictions.
-
-The latest checkpoint contains the selected payload, so resume can restore
-both best weights and the matching prediction export after an interrupted
-write. Older selected payloads without records remain loadable; their missing
-predictions are not invented. Mixing applies only to TRAIN: every saved TUNE
-record corresponds to one actual, unmodified slice and its genuine label.
-
-The final eight-check CPU suite passed locally and on Rangpur. It additionally reconciles the
-exported records against selected weights' epoch/metrics, recomputes complete
-slice metrics, and repairs a removed export through resume. Continuous and
-resumed mixed training produce identical selected records. These checks use
-sixteen tiny AdamW steps per final run and synthetic fixtures, not real ADNI
-images. CUDA remained uninitialized in both environments.
-
-### Launch the paired MixUp and second-seed controls
-
-The four fits use the committed implementation at `97be835`, which passed
-eight focused checks on both local and Rangpur CPU runtimes. Deployment
-matches all four Python sources; the pinned 30,520-row manifest retains its
-680 patient identities and 18,560/2,860/3,180/5,920 partition counts. These
-are metadata checks, without image access. The earlier seven-check local
-development run and both final eight-check runs together used forty-eight
-tiny synthetic AdamW updates; their fixtures are outside the submitted code.
-
-No model dimensions or batch size change in this round. The preceding A100
-fits already measured the CNN and six-block GFNet at this batch size; MixUp
-adds batch interpolation and a second label loss without new model parameters.
-Its actual allocated GPU execution remains to be observed. Checkpoint-size
-measurements from the saved G/CNN controls, plus room for selected records and
-temporary saves, give a simultaneous four-fit reserve of 545,036,183 bytes.
-With another 1 GiB of free-space allowance, the submission gate requires
-1,618,778,007 bytes; 3,902,799,872 bytes were available. Existing checkpoints
-were retained.
-
-All four were submitted once on 25 October 2026. At the bounded observation
-at 21:36:30 Brisbane, their states were:
-
-| Fit | Job | Model / seed / MixUp alpha | Observed state |
-| --- | --- | --- | --- |
-| M1 | 697319 | Six-block convolutional GFNet / 3710 / 0.2 | Pending; nodes unavailable/reserved |
-| M2 | 697320 | Same GFNet / 3711 / 0 | Pending; priority |
-| M3 | 697321 | Same GFNet / 3711 / 0.2 | Pending; priority |
-| M4 | 697322 | Original CNN / 3711 / 0.2 | Pending; priority |
-
-Each independent job requests one A100, two CPUs and two hours across
-comp3710, a100 and a100-grind; the first available eligible allocation can
-start it. The twenty-minute test partition is excluded. Runtime/restarts
-were zero, no actual training node/GPU was assigned, and no completed epoch
-or metric existed in this observation. Forecast values do not establish
-an allocation. The maximum round budget is 120 epochs, 34,800 updates,
-2,227,200 source TRAIN-slice inputs and 343,200 ordinary TUNE inputs; early
-stopping reduces the actual totals. MixUp pairs reuse the loaded batch and
-these counts are not independent image-decode measurements.
-
-M1 and M3 will be judged against their corresponding unmixed seed controls,
-with M2 testing how well G reproduces on another seed. M4 addresses the
-saved CNN 3711 result while retaining the established CNN recipe. No outcome
-is inferred from submission, and this four-fit development round does not
-automatically authorize a further recipe search or final TEST evaluation.
-
-### Complete the MixUp comparison and bound the remaining development
-
-All four M1--M4 jobs completed with exit 0 and normal accuracy-patience
-stopping. Their saved histories and selected TUNE records agree; every
-accuracy below uses the complete 2,860-slice population.
-
-| Fit | Seed | Selected / terminal epoch | TUNE accuracy | NLL | Confidence >=0.90 errors / false negatives |
-| --- | --- | --- | --- | --- | --- |
-| GFNet M1, MixUp 0.2 | 3710 | 17 / 25 | 74.09% | 0.9408 | 551 / 421 |
-| GFNet M2, unmixed control | 3711 | 13 / 21 | 74.30% | 1.7818 | 572 / 420 |
-| GFNet M3, MixUp 0.2 | 3711 | 10 / 20 | 75.03% | 0.8922 | 436 / 382 |
-| CNN M4, MixUp 0.2 | 3711 | 18 / 26 | 83.22% | 0.4339 | 188 / 111 |
-
-CNN 3711 improves on its unmixed 81.15%, NLL 0.7542 and 344/144 confident
-errors/false negatives. This warrants confirming the same intervention on
-3710 and 3712, rather than assuming the weakest seed's improvement applies
-to all seeds. GFNet does not show a consistent MixUp benefit: M1 falls below
-the saved 3710 control's 75.80%; M3 gains only 21 correct slices over M2.
-M3 also reduces AD recall from 62.58% to 58.56%, despite fewer confident
-errors. Confidence reduction alone is therefore not sufficient evidence
-of a better classifier.
-
-The four fits used 92 complete epochs, 26,680 updates, 1,707,520 source
-TRAIN presentations and 263,120 TUNE presentations. All recorded A100
-execution with two intra-op/two inter-op threads. Presentations are loader
-consumptions, not separately instrumented image-decode counts.
-
-One final training round is reserved, followed by one final evaluation.
-The remaining GFNet hypothesis concerns MLP capacity: in the six-block
-reference, the 256-to-1024-to-256 MLPs contain about 78% of model parameters.
-The earlier gain from reducing twelve blocks to six supports testing a
-smaller channel expansion while preserving all six Fourier filters and the
-convolutional stem. This is evidence for an experiment, not proof that
-capacity is the unique cause of the generalization gap.
-
-| Final-round fit | Seeds to train | Change / comparison |
+LayerNorm controls feature scale before filtering and channel processing.
+The MLP expands **256 → 1,024 → 256** with GELU, giving each globally mixed
+token a nonlinear channel representation. Learned position embeddings retain
+location information. DropPath increases from 0 to 0.1 across the blocks as
+training regularization; final normalization, token averaging and a linear
+head produce the class logits.
+
+### From the Initial Architecture to the Selected Model
+
+The starting point used twelve GFNet blocks and width 256, matching
+**GFNet-Ti**, the paper's smallest flat variant
+([Table 2](https://arxiv.org/pdf/2107.00645)). For a cohort of 680 patients,
+I started with this smaller variant rather than the wider ImageNet models.
+
+Later experiments favoured a **convolutional stem and six blocks**. The stem
+applies four overlapping 3 × 3 stride-two convolutions with 32, 64, 128 and
+256 channels. It builds local features before global filtering and reaches
+the same 15 × 16 token grid. Compared with the paper's non-overlapping patch
+projection, it lets neighbouring regions interact before the Fourier layers.
+
+Reducing depth lowers capacity while retaining width 256 and MLP ratio 4.
+The final ratio choice follows the three-seed comparison with ratio 2;
+the development section presents those results alongside the stem and depth
+experiments. DropPath reaches 0.1 as added regularization, compared with 0
+for the paper's GFNet-Ti ([Appendix B](https://arxiv.org/pdf/2107.00645)).
+
+| Configuration | Input embedding | GFNet blocks | Width / MLP ratio | Parameters |
+| --- | --- | ---: | --- | ---: |
+| Initial GFNet | 16 × 16 patch projection | 12 | 256 / 4 | 7,276,802 |
+| Selected GFNet | Four-layer convolutional stem | 6 | 256 / 4 | 4,025,058 |
+
+
+## Training and Model Selection
+
+### Learn from the Slice Distribution
+
+Each epoch shuffles all **18,560 TRAIN slices once**, giving every image
+equal weight in cross-entropy. AD accounts for **51.08%** of these slices,
+so ordinary sampling already provides near-balanced class exposure.
+Patient-balanced sampling changes that distribution because patients
+contribute different numbers of scans; its consequences are examined in
+the development section.
+
+Both models start from random initialization and learn from the same MRI
+data, using cross-entropy to learn class decisions and probabilities.
+
+### Address Generalization, Not Just Training Loss
+
+TRAIN loss fell while TUNE performance stalled. I compared learning rate,
+weight decay and augmentation separately to investigate this generalization
+gap.
+
+[AdamW](https://arxiv.org/abs/1711.05101) separates weight decay from adaptive
+gradient updates, making regularization strength a distinct choice. In the
+initial learning-rate comparison, CNN reached **84.41% TUNE accuracy at
+3e-4**, against **81.71% at 1e-4**. GFNet gained a little accuracy at the
+lower rate but produced worse NLL and more confident errors. Subsequent
+experiments kept 3e-4 while investigating its input representation and capacity.
+
+Small TRAIN rotations (±5°) and translations (±2%) improved GFNet's TUNE
+accuracy and were retained to introduce positional variation. CNN continued
+with the established unaugmented baseline during this investigation.
+
+| Setting | Final recipe |
+| --- | --- |
+| Optimizer | AdamW; peak learning rate 3e-4; weight decay 0.01 |
+| Batch size | 64 |
+| Schedule | Two warm-up epochs, then cosine decay to 1% of peak |
+| Training limit | 30 epochs; early stopping from epoch 20 |
+| Patience | Eight epochs without improved TUNE accuracy |
+| Loss | Cross-entropy, without label smoothing or MixUp |
+| Training seeds | 3710, 3711, 3712 |
+
+Native-resolution memory measurements supported batch 64 for both models.
+The thirty-epoch ceiling balances learning time against the cost of multiple
+comparisons, permitting **556,800 TRAIN presentations**: slightly more than
+the earlier sixty sampled epochs. Warm-up softens the initial learning-rate
+increase; cosine decay makes later updates smaller. A minimum of twenty
+epochs leaves an initial learning period, followed by patience-based stopping
+when TUNE accuracy remains stalled.
+
+### Accuracy and Confidence Can Favour Different Models
+
+Checkpoint selection follows the slice-accuracy assessment criterion: choose
+the highest TUNE accuracy, with lower slice NLL breaking ties. Confidence
+reliability remains the central research question, evaluated alongside
+classification performance.
+
+In the three-seed CNN comparison, MixUp improved
+mean TUNE NLL from **0.7242 to 0.4257**, while mean accuracy fell from
+**82.79% to 82.54%**. The accuracy-first rule retained the unmixed CNN.
+The final recommendation also considers MixUp's better probability quality.
+
+Final recipe comparisons use training seeds **3710–3712** to check whether
+an improvement persists across initializations.
+
+## Development: From Patient Balancing to Slice-Level Learning
+
+### Repeated Scans Motivated Patient-Balanced Sampling
+
+AD patients contributed **3.56 scans each in TRAIN, compared with 1.65 for
+NC controls**: just over twice as many. Repeat scans are fine; the model
+does not need to hand out loyalty points. V1 sampled one acquisition per
+patient each epoch, retaining its twenty slices. Each of the 408 TRAIN
+patients contributed equally, producing **8,160 images per epoch**.
+
+The intention was to limit the influence of frequently scanned patients.
+The overlooked consequence was a change in class exposure: AD made up
+**51.08% of all TRAIN slices but only 32.60% of the sampled stream**.
+Balancing patients had also made the image-level training population
+NC-heavy. Patient independence was needed between partitions; equal patient
+contributions within TRAIN were a separate choice.
+
+### Confidence Was Evaluated at the Wrong Unit
+
+With reliability as the research focus, V1 selected checkpoints using NLL.
+It first averaged the twenty slice probabilities in each scan, then weighted
+scans so each patient contributed equally. This favoured confident, correct
+scan averages, although the network was asked to classify individual images.
+
+Averaging can hide a wrong slice prediction among stronger predictions from
+the same scan. A checkpoint could improve the scan average while
+misclassifying more individual images. V1's NLL measured the quality of
+those averages, leaving slice errors less visible in model selection.
+
+V1 compared peaks of **1e-4, 3e-4 and 1e-3** for each model, then trained two
+additional seeds at the selected 3e-4 rate. Across those ten fits, every
+GFNet run selected epoch one under the aggregated NLL rule.
+
+### Training Loss Fell While TUNE Errors Became More Confident
+
+GFNet's TRAIN cross-entropy fell to **0.0076–0.0143** across the five fits.
+Retrospective best TUNE slice accuracy remained **62.87–67.94%**, and mean
+confidence on TUNE mistakes reached **95.8–97.4%** by the final epoch.
+It was fitting the training images while becoming more certain about wrong
+predictions on other patients.
+
+![V1 GFNet training, TUNE accuracy, TUNE NLL and confidence on errors](figures/v1_gfnet_histories.png)
+
+*Five V1 GFNet fits: three learning rates at seed 3710, plus seeds 3711 and
+3712 at 3e-4. The falling TRAIN loss contrasts with rising TUNE NLL and
+confidence on errors. In the legend, lr0/lr1/lr2 denote 1e-4/3e-4/1e-3.*
+
+CNN learned a stronger classifier, but its probability quality also worsened
+late in training. For seed 3711, the original rule selected epoch 42, with
+**80.70% TUNE slice accuracy and 288 high-confidence AD false negatives**.
+Looking back at the same history, epoch 33 had **82.24% accuracy and 146**
+such false negatives. The scan-NLL rule selected a later checkpoint with
+lower slice accuracy and more confident AD misses.
+
+![V1 CNN training, TUNE accuracy, TUNE NLL and confidence on errors](figures/v1_cnn_histories.png)
+
+*CNN at 3e-4 across three seeds. TRAIN fitting continues after TUNE accuracy
+levels off, while TUNE NLL and confidence on mistakes rise. The epoch-33
+comparison above is a retrospective TUNE diagnosis.*
+
+The original selected models produced these TEST slice accuracies:
+
+| V1 model | Seed 3710 | Seed 3711 | Seed 3712 | Mean |
+| --- | ---: | ---: | ---: | ---: |
+| CNN | 82.40% | 79.49% | 81.17% | 81.02% |
+| GFNet | 54.39% | 58.70% | 54.75% | 55.95% |
+
+CNN's mean concealed a seed below 80%; GFNet was far below the target.
+V1 exposed the models to an NC-heavy sample and selected them on scan
+averages. These choices changed the influence of individual slice errors
+on learning and selection. GFNet also had a generalization problem beyond
+checkpoint choice: even its retrospective best TUNE epochs stayed below 68%.
+
+CNN reached much higher accuracy under the same sampling scheme. Reduced AD
+exposure could contribute to the errors, but the architectural gap also
+suggested investigating GFNet's feature representation and capacity.
+
+A smaller **width-128 GFNet** tested the capacity hypothesis before the
+redesign. Over fifteen sampled epochs, its maximum TUNE accuracy was only
+**63.99%**, within the range already seen in the wider model. Reducing width
+had not improved the best observed TUNE accuracy.
+
+### V2 Aligned Learning and Selection with Individual Images
+
+V2 retained the patient-disjoint split, native grayscale geometry and initial
+CNN/GFNet architectures. Training restarted from random weights with all
+TRAIN slices included each epoch. Selection moved to TUNE slice accuracy,
+using slice NLL to break ties. Confidence analysis also moved to individual
+images.
+
+| Decision | V1 | V2 |
 | --- | --- | --- |
-| CNN MixUp confirmation | 3710, 3712 | Alpha 0.2; reuse completed M4 / 3711 |
-| Six-block convolutional GFNet control | 3712 | MLP ratio 4, no MixUp; reuse G / 3710 and M2 / 3711 |
-| Smaller-MLP GFNet | 3710, 3711, 3712 | MLP ratio 2 only, no MixUp; compare with the three ratio-4 controls |
+| TRAIN exposure | One scan per patient each epoch | Every TRAIN slice once per epoch |
+| Images / updates per epoch | 8,160 / 128 | 18,560 / 290 |
+| AD share of TRAIN stream | 32.60% | 51.08% |
+| Checkpoint selection | Patient-weighted scan NLL | Slice accuracy, then slice NLL |
+| Training ceiling | 60 sampled epochs | 30 full-slice epochs |
+| Confidence evaluation | Scan-aggregated policies alongside slice diagnostics | Slice probabilities and slice errors |
 
-These six fresh fits complete the needed three-seed groups within one round.
-An additional Dropout branch is omitted to keep the question and budget
-bounded. LR 3e-4, decay 0.01, batch 64, native [0,1] slices, thirty maximum
-epochs, two warmup epochs, minimum twenty and accuracy patience eight remain
-fixed. GFNet keeps mild geometry; CNN keeps its no-geometry recipe. Individual
-checkpoints still maximize correct TUNE slices, then minimize NLL for ties.
+### GFNet Still Struggled After Full-Slice Training
 
-After this round, compare each model's complete three-seed recipes by mean
-TUNE slice accuracy, then mean NLL for exact ties; retain the existing recipe
-if both are equal. Report every seed and the lowest accuracy alongside the
-mean, AD recall and confident errors/FNs. Choose one common recipe per model,
-not different recipes for different seeds. Freeze it before calibration and
-the final TEST evaluation. No further training search is planned. Achieving
-80% remains an outcome to measure, not a guarantee from this stopping budget.
-All current comparisons are TUNE results, with the previously stated cohort
-exposure and repeated-development limitations.
+The first V2 comparison used the patch-based twelve-block GFNet and the
+unchanged CNN, testing two learning rates without augmentation. All values
+below are measured at the selected TUNE checkpoint.
 
-### Reduce the channel MLP while retaining the Fourier comparison
+| Model | Peak LR | TUNE accuracy | Slice NLL | High-confidence errors / AD false negatives |
+| --- | --- | ---: | ---: | ---: |
+| CNN | 3e-4 | 84.41% | 0.5368 | 245 / 154 |
+| CNN | 1e-4 | 81.71% | 0.4581 | 175 / 113 |
+| GFNet | 3e-4 | 65.14% | 0.9195 | 424 / 178 |
+| GFNet | 1e-4 | 66.78% | 2.7912 | 892 / 372 |
 
-The flat GFNet now accepts MLP expansion ratio 2 or 4. Ratio 2 changes only
-the channel branch from 256-to-1024-to-256 to 256-to-512-to-256. The six
-complex global filters, positional grid, convolutional stem, normalization,
-DropPath schedule and two-class head remain the same. Parameters decrease
-from 4,025,058 to 2,449,122; MLP parameters account for the whole reduction.
-The reference GFNet exposes this ratio as well, so the experiment retains
-the defining global frequency filtering rather than replacing it with a CNN.
+*High confidence means raw predicted-class probability ≥0.90.*
 
-Two temporary CPU checks passed. At the default ratio 4, initialized state
-tensors and final construction RNG match the preceding implementation for
-CNN, patch GFNet, convolutional GFNet and Pyramid. Both ratio-2 and ratio-4
-six-block models produced finite [2,2] logits and gradients on synthetic
-native-resolution inputs, including gradients to every complex filter.
-These two backward calls made no optimizer updates and opened no real images.
-They establish construction and differentiation, not expected TUNE accuracy.
+CNN achieved higher accuracy at 3e-4 but lower NLL at 1e-4. GFNet still
+showed a large gap between fitting and generalization: at 3e-4, TRAIN
+accuracy reached **99.91%**, while final TUNE accuracy fell to **61.36%**.
+Full-slice training and accuracy-based selection had not closed that gap.
+Lowering the learning rate added only 47 correct TUNE images at selection
+and more than doubled high-confidence errors.
 
-### Bind MLP capacity to training, resume and selected-weight inference
+I kept the patch-based architecture for three comparisons: centering pixels
+from [0,1] to [-1,1] to test input scale; increasing weight decay from 0.01 to
+0.05 to constrain fitting; and adding small rotations and translations to
+test positional sensitivity.
 
-`--gfnet-mlp-ratio 2` selects the smaller flat GFNet; the saved configuration
-and selected-weight loader carry that choice into reconstruction. Missing
-historical fields mean ratio 4. Resume rejects changing the ratio because
-the optimizer tensors and hidden weights belong to the original dimensions.
-CNN and Pyramid retain their original defaults. For example, the new
-GFNet recipe uses `--gfnet-embedding conv --gfnet-depth 6
---gfnet-mlp-ratio 2 --augment` alongside the fixed training arguments.
+### Small Position Changes Helped More Than Centering or Stronger Decay
 
-Three integration checks passed locally and on Rangpur CPU: CLI/configuration
-forwarding, selected-weight reconstruction for both ratios and an older
-configuration, and exact continuous/resumed optimizer/RNG state with ratio
-binding and the historical default. Each environment used sixteen tiny
-synthetic AdamW updates and three temporary selected-weight loads. The two
-native module checks also passed on Rangpur; CUDA remained uninitialized.
-The login-host driver-probe warning is preserved separately from these
-successful CPU outcomes. Actual A100 behavior of the smaller configuration
-will be measured by the final-round jobs.
+GFNet fitted TRAIN almost perfectly, while TUNE accuracy stayed near 65%.
+The reference recipe uses normalized natural images; these grayscale slices
+were scaled to [0,1]. I tested [-1,1] input to see whether changing the
+numerical scale and offset helped optimization, keeping the image content
+and architecture unchanged.
 
-### Submit the final six fits with complete seed coverage
+The widening TRAIN–TUNE gap also motivated stronger weight decay. I tested
+**0.05**, the value in Rao et al.'s reference training script, against 0.01:
+a fivefold increase on the same model weights.
+CNN showed late overfitting too, so it received the same comparison. For
+GFNet, learned positions on a fixed grid raised another possibility:
+sensitivity to exact image placement. Small **±5° rotations and ±2%
+translations** introduced positional variation while limiting anatomical
+changes; crops and flips were left out of this comparison.
 
-The training snapshot is commit `ca99ce8`. Five focused module/integration
-checks passed on both local and Rangpur CPU runtimes. Two additional local
-submission checks verified all six argument combinations, consumed-entry
-protection and stopping after a simulated partial rejection. Their first
-attempt exposed an index error in the test's argument assertion; correcting
-that assertion produced a complete two-check pass. No real submission was
-made by these doubles. The checks together used thirty-two tiny synthetic
-AdamW steps and four native-model backward calls; no real image was opened.
+| Model / change | TUNE accuracy | Slice NLL | High-confidence errors / AD misses |
+| --- | ---: | ---: | ---: |
+| GFNet baseline | 65.14% | 0.9195 | 424 / 178 |
+| A: centered input | 65.91% | 1.3415 | 681 / 346 |
+| B: weight decay 0.05 | 64.51% | 2.9296 | 932 / 620 |
+| C: mild geometry | 69.62% | 2.3910 | 734 / 414 |
+| CNN baseline | 84.41% | 0.5368 | 245 / 154 |
+| CNN: weight decay 0.05 | 83.32% | 0.9516 | 362 / 176 |
 
-Deployment matches the committed Python snapshot and the fixed manifest.
-The six existing comparison fits remain complete with their saved selected
-counts. A conservative reserve treats even the smaller GFNet payloads as
-full-size ratio-4 payloads: 766,151,526 bytes for simultaneous temporary and
-retained checkpoints/records, plus 1 GiB headroom. The 1,839,893,350-byte
-gate passed with 3,634,364,416 bytes available, without deleting old models.
+*Saved selected-epoch TUNE results: seed 3710, LR 3e-4, all 2,860 slices.
+High-confidence errors use predicted-class probability ≥0.90; AD misses are
+its AD-to-NC error subset. Each candidate changes one baseline setting.*
 
-The entry submitted all six jobs once. At **26 October 2026, 10:40:54
-Brisbane**, the saved scheduler/progress observation was:
+Centering added only **22 correct predictions**, or 0.77 percentage points,
+with worse NLL. Stronger decay hurt both models. Overfitting was visible,
+but increasing this penalty alone did not improve held-out performance.
+The original [0,1] scale and decay 0.01 were retained.
 
-| Fit | Job | Model / seed / intervention | State |
-| --- | --- | --- | --- |
-| N1 | 699025 | CNN / 3710 / MixUp 0.2 | Pending; nodes unavailable/reserved |
-| N2 | 699026 | CNN / 3712 / MixUp 0.2 | Pending; priority |
-| N3 | 699027 | Six-block convolutional GFNet / 3712 / ratio-4 control | Pending; priority |
-| N4 | 699028 | Same GFNet / 3710 / MLP ratio 2 | Pending; priority |
-| N5 | 699029 | Same GFNet / 3711 / MLP ratio 2 | Pending; priority |
-| N6 | 699030 | Same GFNet / 3712 / MLP ratio 2 | Pending; priority |
+Geometry gave the largest classification gain: **128 additional correct
+slices, or 4.48 percentage points**. NLL and confident errors still rose.
+I kept the positional variation for subsequent GFNet experiments. C became
+the common comparison for two questions: whether a local stem improved
+classification, and whether soft targets reduced the confident errors.
 
-Each requests one A100, two CPUs and two hours across comp3710, a100 and
-a100-grind. The independent jobs can start as eligible resources become
-available; the twenty-minute test partition cannot accommodate this request.
-All had zero runtime/restarts, no assigned node/GPU and no completed epoch
-at this observation. Actual hardware, timing, memory and outcomes remain to
-be collected from their allocation records. The maximum fresh budget is
-180 epochs, 52,200 updates, 3,340,800 source TRAIN presentations and 514,800
-TUNE presentations; ordinary early stopping can reduce these totals.
+### Local Features Improved Accuracy; Soft Targets Improved NLL
 
-Completed G/3710, M2/3711 and M4/3711 are reused rather than retrained. After
-the six jobs finish, the predeclared three-seed comparison determines the
-common recipe for each model before the single final evaluation stage.
+CNN's advantage suggested that useful local structure might be harder to
+learn through GFNet's single 16 × 16 patch projection. Overlapping **3 × 3
+convolutions** let neighbouring regions interact across the original patch
+boundaries before global filtering. Four stride-two layers produce the same
+overall reduction as stride 16, ending at **15 × 16 × 256**; the remaining
+twelve Fourier blocks can stay unchanged. Convolutional stems have also
+improved ViT optimization
+([Xiao et al., 2021](https://arxiv.org/abs/2106.14881)).
 
-### Close development and freeze the final six selected models
+C's **734 high-confidence errors** motivated a separate label-smoothing
+experiment. Hard targets keep rewarding increasingly certain predictions
+on TRAIN; soft targets reduce that pressure
+([Müller et al., 2019](https://arxiv.org/abs/1906.02629)). The mild coefficient
+**0.05** mixes 95% hard label with 5% uniform probability, giving binary
+targets **0.975/0.025**. The labelled class retains most of the supervision,
+without demanding probability one. This experiment kept patch embedding,
+so the effect of soft targets could be distinguished from the stem change.
 
-All six N1--N6 jobs completed with exit 0, zero restarts and normal accuracy
-patience. Saved selected records, complete histories and source/configuration
-identities agree. Actual allocations were A100-PCIE-40GB on a100-9/comp3710
-or a100-5/a100, using two intra-op/two inter-op threads.
+![GFNet input processing and local-feature comparisons](figures/gfnet_input_stem_comparison.png)
 
-| Recipe | Seed 3710 accuracy | Seed 3711 accuracy | Seed 3712 accuracy | Mean accuracy | Mean NLL |
-| --- | --- | --- | --- | --- | --- |
+*Seed 3710, selected TUNE checkpoints. A/B/C compare with the patch baseline;
+D/E compare with C, which already includes mild geometry. Values come from
+the saved TUNE histories.*
+
+The stem (**D**) raised accuracy from **69.62% to 74.86%**: 2,141 correct
+slices versus 1,991, a gain of 150. NLL fell from 2.3910 to 1.8350, supporting
+local feature extraction before global mixing. The error changes were uneven:
+high-confidence errors fell from 734 to 654, but high-confidence AD misses
+rose from **414 to 460**.
+
+The smoothed patch model (**E**) remained near the control's accuracy at
+**69.34%** (1,983 correct), while NLL fell to **0.8991**. It improved the
+probability loss without improving classification.
+
+Meanwhile, the unchanged CNN scored **84.41%, 81.15% and 82.80%** at the
+selected TUNE epochs of seeds 3710–3712. I retained this baseline and
+concentrated the remaining architecture experiments on GFNet.
+
+### Six Blocks Reduced Confident AD Misses
+
+The stem model still reached **99.91% online TRAIN accuracy**. TUNE epoch
+11 already had 2,131 correct predictions; selected epoch 19 added only ten,
+while high-confidence AD misses rose from **327 to 460**. Further fitting
+was producing little classification gain and more confident AD mistakes.
+
+The stem had improved classification, but the later trajectory suggested
+that the repeated Fourier/MLP stack could still be fitting training-specific
+details. I retained the stem and tested **six blocks against twelve**.
+Halving the stack makes a substantial capacity change while keeping the
+256-channel representation and 15 × 16 grid fixed. Each remaining filter
+still mixes the whole grid, so reducing depth preserves the spatial reach
+of individual blocks. Parameters fell from **7,599,330 to 4,025,058**, with
+maximum DropPath unchanged at 0.1. E had improved NLL in the patch model,
+so smoothing was also tested with the stronger stem representation.
+D/F/G/H crossed both depths with smoothing 0 and 0.05: D versus G compares
+depth, D versus F compares smoothing at twelve blocks, and G versus H repeats
+that smoothing comparison at six. A lower rate was tested on F as well:
+its stem and soft targets
+had changed the optimization conditions since the earlier patch-model LR
+comparison.
+
+| Fit | Blocks / smoothing / LR | TUNE accuracy | NLL | High-confidence AD misses |
+| --- | --- | ---: | ---: | ---: |
+| D: reference | 12 / 0 / 3e-4 | 74.86% | 1.8350 | 460 |
+| F | 12 / 0.05 / 3e-4 | 75.42% | 0.7882 | 477 |
+| G | 6 / 0 / 3e-4 | 75.80% | 0.9047 | 299 |
+| H | 6 / 0.05 / 3e-4 | 73.50% | 0.8652 | 509 |
+| I | 12 / 0.05 / 1e-4 | 74.20% | 0.7742 | 341 |
+
+*All use the stem, geometry and seed 3710. Saved TUNE metrics are taken from
+the selected epochs D/F/G/H/I = 19/17/7/21/13 over the same 2,860 images.
+Parameter totals are counts of the trainable weights in each architecture.*
+
+![Depth and label smoothing: TUNE accuracy and confident AD misses](figures/gfnet_depth_smoothing.png)
+
+Six blocks without smoothing (**G**) gave the group's highest accuracy,
+adding **27 correct slices** over D and removing **161 high-confidence AD
+misses**. AD recall rose from **62.73% to 66.82%**. Both classification and
+this error measure favoured the smaller model, which became the next
+flat-GFNet reference.
+
+Smoothing helped twelve-block accuracy slightly, but cost the six-block model
+**66 correct predictions** and increased confident AD misses from **299 to
+509**. Two plausible improvements had not combined successfully. F also had
+lower NLL than G but more confident AD misses; its better average probability
+loss did not reflect a lower AD-error burden. Reducing F's learning rate
+produced I, losing **35 correct predictions** for another small NLL gain.
+The six-block, unsmoothed, 3e-4 recipe was retained.
+
+The smaller model still overfit. From selected epoch seven to final epoch
+twenty, its online TRAIN accuracy rose from **94.02% to 99.45%**, while TUNE
+accuracy fell from **75.80% to 70.63%**. NLL increased from **0.9047 to
+2.5903**, and high-confidence AD misses from **299 to 569**. Reducing depth
+improved the selected model, but further fitting still widened the gap
+between TRAIN and other patients' images.
+
+### The Hierarchical Model Remained Below the Flat Reference
+
+The convolutional stem had gained **5.24 percentage points**; reducing depth
+added **0.94**. This suggested investigating where global mixing occurred.
+The flat model performs all Fourier processing after the image has already
+been reduced to 15 × 16. Rao et al.'s GFNetPyramid, available in the
+[course fork](https://github.com/shakes76/GFNet/blob/a0c7aefaf7109ceed284df77b415046466e5bc38/gfnet.py),
+provided a way to mix features at finer resolutions between downsampling stages.
+
+I adapted its four-stage structure to **three stages**, stopping at the
+existing 15 × 16 grid. A fourth stage would add a wider 512-channel level and
+require another reduction of the odd height 15. Early widths of **64 and
+128** limit the feature-memory cost of larger grids; the final **256** channels
+retain the previous classifier width. LayerScale starts at **0.001**, following
+the reference Pyramid constructor, to keep the initial residual contributions
+small. Maximum DropPath remains 0.1. Four candidates combine two final-stage
+depths with two learning rates, using the same three-stage structure.
+
+| Stage | Grid | Channels | Compact / extended blocks |
+| --- | --- | ---: | --- |
+| Fine | 60 × 64 | 64 | 2 / 2 |
+| Intermediate | 30 × 32 | 128 | 2 / 2 |
+| Coarse | 15 × 16 | 256 | 2 / 4 |
+
+Two blocks per stage distribute six blocks across three resolutions, retaining
+the flat reference's total block count. Adding two blocks only at the coarse
+stage tests extra capacity on the smaller grid, limiting the
+additional feature-memory cost. The variants contain **2,926,562 and 4,118,498
+parameters**, counted from their trainable weights. The larger is close to
+the flat reference's 4,025,058, making it useful to compare how capacity is
+distributed across resolutions. Both depths were tested at **3e-4 and 1e-4**:
+the changed stage widths and residual scaling gave a reason to reconsider
+learning rate within this architecture.
+
+| Fit | Stage blocks / LR | TUNE accuracy | NLL | High-confidence errors / AD misses |
+| --- | --- | ---: | ---: | ---: |
+| P1 | 2/2/2 / 3e-4 | 73.01% | 2.0468 | 624 / 493 |
+| P2 | 2/2/2 / 1e-4 | 72.90% | 0.5658 | 0 / 0 |
+| P3 | 2/2/4 / 3e-4 | 74.02% | 2.2614 | 642 / 443 |
+| P4 | 2/2/4 / 1e-4 | 73.46% | 1.2533 | 493 / 425 |
+
+*Saved selected-epoch TUNE results, seed 3710, 2,860 slices. P1–P4 select
+epochs 14/2/14/12, with 2,088/2,085/2,117/2,101 correct predictions.*
+
+![Pyramid and flat GFNet development results](figures/gfnet_pyramid_results.png)
+
+The best hierarchy reached **74.02%**, below flat G's **75.80%**. Additional
+coarse blocks improved accuracy slightly but did not close the gap. P2's zero
+high-confidence errors looked promising until the denominator was examined:
+only **31 predictions**, or **1.08% of TUNE**, reached confidence 0.90. It
+rarely made a high-confidence decision. The later rejection analysis includes
+coverage to show how many predictions remain when errors are reduced.
+
+The hierarchy also kept fitting TRAIN while TUNE deteriorated. Final online
+TRAIN accuracies ranged from **96.64% to 99.84%**, against **66.64–71.78%** on
+TUNE. P3 ended with NLL **4.3301** and **97.37%** mean confidence on errors.
+This hierarchical recipe still showed the generalization problem; the
+simpler six-block flat model remained the reference.
+
+### MixUp Helped the Weakest CNN Seed, but Not GFNet Consistently
+
+Label smoothing had softened targets on the original images, sometimes
+improving NLL without improving classification. [MixUp](https://arxiv.org/abs/1710.09412)
+also changes the inputs: it interpolates images and labels with the same
+weight, encouraging smoother predictions between training examples.
+[Thulasidasan et al.](https://arxiv.org/abs/1905.11001) studied its confidence
+benefits, and [Rao et al.'s training script](https://github.com/raoyongming/GFNet/blob/2de48b626ea805de82a7f389fed930af1ae0340d/main_gfnet.py)
+also includes mixing augmentation.
+
+I tested **MixUp alone at alpha 0.2**. A Beta(0.2, 0.2) draw favours weights
+near the ends of the interval, keeping many mixtures closer to one original
+image. This offered a relatively mild interpolation candidate without adding
+CutMix at the same time. Images and target labels use the same mixing weight;
+TUNE remains ordinary, unmixed slices.
+
+GFNet was compared with and without MixUp at seeds 3710 and 3711, keeping
+the initialization seed matched within each pair. CNN seed **3711** was
+tested first because it had the
+lowest baseline TUNE accuracy, **81.15%**, and **344 confident errors**.
+
+| Model / seed | MixUp alpha | TUNE accuracy | NLL | High-confidence errors / AD misses |
+| --- | --- | ---: | ---: | ---: |
+| GFNet / 3710 | 0 | 75.80% | 0.9047 | 409 / 299 |
+| GFNet / 3710 | 0.2 | 74.09% | 0.9408 | 551 / 421 |
+| GFNet / 3711 | 0 | 74.30% | 1.7818 | 572 / 420 |
+| GFNet / 3711 | 0.2 | 75.03% | 0.8922 | 436 / 382 |
+| CNN / 3711 | 0 | 81.15% | 0.7542 | 344 / 144 |
+| CNN / 3711 | 0.2 | 83.22% | 0.4339 | 188 / 111 |
+
+*Each row uses the saved selected TUNE epoch on all 2,860 slices. GFNet retains
+the six-block stem model and geometry; CNN retains its unaugmented baseline.*
+
+GFNet lost accuracy at seed 3710. Seed 3711 gained **21 correct slices**, but
+AD recall fell from **62.58% to 58.56%**, despite improved NLL and fewer
+confident errors. Its smaller error counts did not mean better AD recognition.
+The two seeds gave little reason to adopt MixUp for GFNet.
+
+CNN 3711 improved in accuracy, NLL and confident errors. The remaining seeds
+were needed to see whether the gain extended beyond this initially weaker
+run. The final comparison completed CNN MixUp seeds 3710 and 3712 alongside
+the existing 3711 result.
+
+### The Last Capacity Test Targeted the Channel MLP
+
+After the Pyramid and GFNet MixUp comparisons, G remained the strongest
+accuracy reference. **3,153,408 of its 4,025,058 parameters—about 78%—were in
+its six MLPs**. This count comes from the two linear layers and their biases
+in each block. The earlier depth reduction had helped; shrinking this large
+channel branch offered another capacity test while preserving every Fourier
+filter and the local stem.
+
+[Rao et al.'s GFNet implementation](https://github.com/raoyongming/GFNet/blob/2de48b626ea805de82a7f389fed930af1ae0340d/gfnet.py)
+exposes the MLP expansion ratio. I compared the existing **ratio 4**
+(256 → 1,024 → 256) with **ratio 2** (256 → 512 → 256), halving hidden width
+while leaving token width and all six global filters intact. Total parameters
+fell to **2,449,122**. This reduced the largest parameter component while
+preserving the local features and all six global-filter layers.
+
+The final round had two questions left: whether CNN's MixUp gain persisted
+across seeds, and whether a smaller GFNet MLP improved on G. Six new fits
+completed the comparisons: two CNN MixUp seeds, one missing ratio-4 GFNet
+control, and three ratio-2 GFNet seeds. Existing controls were reused.
+Each complete recipe uses seeds 3710–3712. Mean TUNE accuracy determines
+the final choice, with mean NLL breaking an exact tie.
+
+| Recipe | Seed 3710 | Seed 3711 | Seed 3712 | Mean accuracy | Mean NLL |
+| --- | ---: | ---: | ---: | ---: | ---: |
 | CNN, unmixed | 84.41% | 81.15% | 82.80% | 82.79% | 0.7242 |
 | CNN, MixUp 0.2 | 82.03% | 83.22% | 82.38% | 82.54% | 0.4257 |
 | GFNet, MLP ratio 4 | 75.80% | 74.30% | 75.63% | 75.24% | 1.5748 |
 | GFNet, MLP ratio 2 | 74.06% | 74.41% | 74.16% | 74.21% | 2.3100 |
 
-These are full-population TUNE slice results. CNN MixUp improves NLL and
-the weakest seed, but loses 21 correct predictions across the three seed
-evaluations. The predeclared accuracy-first rule therefore retains the
-unmixed CNN. Its reliability trade-off must stay visible rather than changing
-the selection criterion after seeing the results. Shrinking the GFNet MLP
-reduces parameters without improving generalization, so retain ratio 4.
-GFNet's 80% development goal remains unmet; completing the jobs is not
-equivalent to satisfying that target.
+*Every entry is the selected checkpoint's result on the same 2,860 TUNE slices.
+Means average the three seed metrics. Each line in the figure joins a matching seed.*
 
-Final checkpoints are CNN seeds 3710/3711/3712 at epochs 14/18/16, and
-six-block convolutional GFNet seeds 3710/3711/3712 at epochs 7/13/19.
-No weights are averaged and no seed-specific recipes are substituted.
-The last round adds 145 complete epochs and 42,050 updates; previous fits
-are reused. No further training search is planned.
+![Three-seed recipe comparisons](figures/development_seed_comparison.png)
 
-### Specify the single final slice evaluation before reading its outcomes
+CNN MixUp improved NLL at all three seeds, but its accuracy gain at 3711 was
+offset by losses at 3710 and 3712. Across the three evaluations it classified
+**21 fewer slices correctly**, with mean accuracy falling from **82.79% to
+82.54%**. The unmixed CNN was retained for its higher mean accuracy.
+MixUp's substantially better probability loss remains part of the final
+comparison of accuracy and confidence.
 
-For each fixed checkpoint, predict all 3,180 CALIBRATION slices, fit one
-positive temperature by slice NLL, then predict all 5,920 TEST slices once.
-Use a fixed temperature range 0.05--20 with endpoint checks; report a boundary
-solution rather than expanding the range after observing TEST. Positive
-temperature changes confidence, not the class decision or official accuracy.
-Report both raw and calibrated reliability, keeping the full TEST denominator.
+For GFNet, ratio 2 reduced parameters but gave lower mean accuracy and higher
+mean NLL. The gain from reducing depth had not extended to reducing MLP width.
+Ratio 4 was retained, although its **75.24% mean TUNE accuracy** still fell
+short of 80%.
 
-Choose each model/seed's rejection threshold solely on CALIBRATION to retain
-at least 80% of slices, accepting the entire tied score group. Store the
-absolute scaled logit threshold as well as its displayed confidence, avoiding
-saturated probabilities turning different scores into artificial ties.
-Apply that fixed threshold to TEST and report actual coverage, selective risk
-and retained false negatives. Descriptive TEST risk--coverage curves compare
-error ranking at common coverages; they do not retune the operating threshold.
+The models taken forward were the unmixed CNN and the six-block convolutional
+GFNet with ratio 4 and mild geometry. Their selected epochs for seeds
+3710–3712 were **14/18/16 for CNN and 7/13/19 for GFNet**. These fixed models
+supplied the subsequent calibration and TEST evaluation.
 
-Statistical uncertainty uses 2,000 paired, diagnosis-stratified patient
-bootstrap draws with seed 9001. Patient IDs keep correlated slices together;
-all reported predictions and accuracies remain individual-slice quantities.
-Report each seed, means and GFNet-minus-CNN intervals. These intervals are
-conditional on the selected fits, calibration and observed cohort; they do
-not include retraining or external-site uncertainty.
+## Evaluating Confidence and Selective Prediction
 
-Five deterministic error-case slots use seed 3710 for paired predictions:
-GFNet confident false negative, CNN confident false negative, GFNet-only
-error, CNN-only error and a wrong prediction near the GFNet decision boundary.
-Use distinct patients where available and show other seeds as context.
-Prediction ambiguity is not a clinical annotation of diagnostic ambiguity.
-Record parameter counts, saved training costs, measured inference time and
-memory, so the recommendation weighs reliability, accuracy and cost.
-The existing history of cohort exposure remains a limitation: this final
-evaluation cannot restore an independently unseen test cohort.
+### Calibrate the Probability Scale
 
-### Implement calibration and selective prediction without changing labels
+Development showed that accurate classification and useful probabilities
+could favour different recipes. I kept the selected classifiers fixed and
+used **temperature scaling** to adjust their confidence. This single-parameter
+method follows [Guo et al. (2017)](https://proceedings.mlr.press/v70/guo17a.html),
+keeping the same classification boundary while changing the probability scale.
 
-The slice functions in `predict.py` fit the single temperature with a bounded
-log-space golden-section search and explicitly compare T=1 and both endpoints.
-Raw records remain intact; scaled records preserve the raw margin. Rejection
-uses the stored absolute-margin threshold and keeps whole ties, so TEST
-coverage is measured rather than forced to the calibration target. Curves
-also expose achieved coverage at each common target and a tied-group step
-area under risk--coverage. They remain descriptive evaluation summaries.
+Each model/seed has its own temperature, fitted on the **3,180 CALIBRATION
+slices**. TUNE had already guided model selection; a separate population lets
+probability adjustment follow that choice without fitting again to the same
+development images.
 
-Seven temporary synthetic checks passed: an independent 2,001-temperature
-grid reference, boundary/flat optima, unchanged class decisions and records,
-different evaluation coverage under a fixed policy, true/saturated score
-ties, direct risk--coverage arithmetic and invalid fitting inputs. No model,
-optimizer, image or real-cohort fitting was used by these checks.
+For an AD-minus-NC logit difference $m$, calibrated predicted-class confidence is
 
-### Evaluate the fixed weights once and retain the evidence
+$$
+\operatorname{confidence}=\sigma\!\left(\frac{|m|}{T}\right),\qquad T>0.
+$$
 
-The explicit `predict.py evaluate` command loads one selected checkpoint,
-predicts CALIBRATION, saves the fitted policy and records, and only then
-predicts TEST with the same evaluation-mode model. It saves raw slice records,
-raw/calibrated metrics, fixed-policy outcomes and descriptive risk curves.
-Existing `predict` calls remain restricted to TUNE/CALIBRATION. A used output
-directory is rejected, avoiding an accidental overwrite or inference replay.
-Checkpoint/data identities and the evaluation sources accompany each result.
+A temperature above one softens confidence; one below one sharpens it. The
+search minimizes CALIBRATION slice NLL over **[0.05, 20]**, allowing both
+directions on a reciprocal scale around one. The original value **T=1** is
+also compared. Dividing by a positive temperature preserves the class decision,
+so raw and calibrated results share the same accuracy and confusion matrix.
 
-Optional synchronized profiling measures model-forward time separately from
-the full loader/prediction wall time, including the first batch and retaining
-the final partial batch. Mean forward milliseconds per slice describe batch
-throughput, not isolated clinical request latency. Inference peaks include
-resident model/batch memory. Saved training histories provide epoch costs
-and training peaks; their times exclude checkpoint persistence and allocation
-overhead, which must not be conflated with measured forward latency.
+### Check Probability Quality and Error Recognition Separately
 
-Four temporary local CPU checks passed. One genuine synthetic-JPEG evaluation
-performed four forwards over four CALIBRATION and five TEST images, fitted
-once from CALIBRATION only and preserved parameters/absent gradients. It
-checked stage ordering, full/partial batching, saved metrics and fresh-output
-behavior. Additional checks cover manifest mismatch before prediction, the
-ordinary TEST guard and single CLI delegation. No real images or optimizer
-updates were used; CUDA stayed uninitialized.
+A model can have reasonable average calibration yet still assign high confidence
+to individual errors. I use several views to examine both behaviours:
 
-### Quantify paired uncertainty and select actual slice errors
+| Measure | Question it answers |
+| --- | --- |
+| Reliability diagram and ECE | Does confidence agree with observed correctness? |
+| NLL and Brier score | How good are the assigned probabilities, including confident mistakes? |
+| Confidence on correct versus wrong predictions; confidence–correctness correlation | Does the model become less certain when it is wrong? |
+| Error-detection AUROC | Does low confidence rank errors ahead of correct predictions? |
+| High-confidence errors and AD misses | Which mistakes remain above confidence 0.90? |
 
-The bootstrap keeps all slices and visits of every resampled patient, with
-draw multiplicity, rather than treating correlated slices as independent
-people. One PCG64(9001) draw set is shared by both models and all seeds.
-Patient-level sums make 2,000 draws efficient without constructing repeated
-image records; final denominators remain slice counts. Report intervals for
-accuracy, raw/calibrated NLL, Brier, ECE, high-confidence error rate, fixed
-coverage/risk and retained false-negative fraction. Missing denominators
-retain undefined values and invalidate an incomplete interval. Include each
-seed, model means and paired GFNet-minus-CNN differences.
+Reliability diagrams use **ten equal-width bins over [0.5, 1]**, the range of
+predicted-class confidence in binary classification. Ten bins give a readable
+summary; ECE weights each bin's confidence–accuracy gap by the number of images
+it contains. NLL strongly penalizes a very low probability for the true class;
+Brier records average squared probability error. Together they show more than
+a single binned calibration score.
 
-Error slots retain separate CNN/GFNet predictions for every seed. Seed 3710
-chooses the five prespecified categories, with path ties resolved exactly,
-distinct patients and an explicit fallback to another actual error when a
-category is empty. There is no patient prediction, seed ensemble or medical
-ambiguity label. Confidence values contextualize the wrong slice itself.
+The **0.90** threshold follows the high-confidence diagnostics used throughout
+development. Its prediction count, error rate and AD misses are reported together,
+so a reduction in errors can be read against the size of that confidence group.
+Full-population accuracy, class recall, macro-F1 and AD AUROC describe classification.
 
-Six synthetic analysis checks passed. A full 2,000-draw independent reference
-explicitly repeats patients and their slices and agrees with the compact
-implementation's points/intervals. Other checks cover shared-draw zero
-differences for identical models, input reordering, mismatched joins,
-undefined selective risk, five known error slots and fallback exclusions.
-These are arithmetic references, not findings from the real TEST population.
+### Retain Most Predictions and Examine the Remaining Errors
 
-### Compose figures and preparation sensitivity from saved predictions
+P2's zero confident errors came from only 31 high-confidence predictions.
+That result made the amount of retained output as important as the error count.
+[Selective classification](https://arxiv.org/abs/1705.08500) studies this trade-off
+between coverage and risk.
 
-`predict.py analyze` joins the six saved TEST outputs to the complete manifest
-population before calculating paired intervals and selecting cases. It writes
-machine-readable results and a factual findings table, reliability plots,
-risk--coverage curves with the fixed operating points, confusion matrices,
-cost comparisons and five case panels. Positive temperature preserves error
-ranking, so one raw-margin ranking curve is sufficient; calibration changes
-the confidence interpretation, not the ordering of difficult slices.
+I chose **80% CALIBRATION coverage** as a working point: retain most predictions
+and leave roughly the least-confident fifth for review. Among the 3,180
+CALIBRATION slices, this requires at least **2,544 retained predictions**.
+The highest confidence threshold meeting that count is selected; tied scores
+stay together. This 80% is a retention choice, separate from the classification
+accuracy target.
 
-The manifest retains original slice indices and within-acquisition ranks.
-Their difference describes the source start index; rank quarters describe
-position among the twenty slices. Report fixed-model metrics within those
-strata, including the common source-start subset, while keeping all TEST
-slices in the main report. Different diagnosis/preparation compositions can
-affect apparent generalization. These descriptive checks do not prove
-removal of confounding or a causal disease signal, and cannot establish
-external-site performance.
+The temperature and threshold are then applied unchanged to TEST. Coverage
+reports the retained fraction, and selective risk is the error rate within
+that retained group. The observed TEST coverage can differ because its scores
+have a different distribution.
 
-Three additional local checks passed: a complete six-output synthetic
-analysis with 2,000 draws and five generated figures, rejection of missing
-TEST slices before analysis, and single analysis-CLI delegation. The complete
-check mocked model loading, inference and fitting to fail if called; only
-five synthetic case images were read for illustration. Synthetic figures
-were visually inspected outside the submission folder. Actual case panels
-will be generated only from the fixed final outputs.
+Two comparisons are useful. The fixed threshold shows how the chosen policy
+transfers to TEST; the **risk–coverage curve** compares models at the same
+retained fraction. Positive temperature scaling preserves confidence ordering,
+so it leaves this ranking curve unchanged. Calibration adjusts what the
+probabilities mean; the curve shows how well the model orders its mistakes.
 
-### Validate the final evaluation path on the target runtime
+### Compare Models on the Same Patients
 
-Twenty focused checks passed locally and on Rangpur CPU: calibration and
-ties, genuine synthetic CALIBRATION/TEST inference, paired resampling/error
-selection, complete-population joins and saved-record figure generation.
-One additional numerical figure check passed in both environments: the
-right-endpoint step area drawn by each risk curve equals its reported AURC.
-Three harmless local orchestration checks confirm six fixed evaluations
-followed by one CPU analysis, stopping at a failed child, and a consumed
-single-submission entry. Temporary tests remain outside the submitted code.
+Both architectures predict the same TEST patients. A difficult patient can
+produce several correlated slices, so treating every slice as an independent
+resampling unit would give too much weight to the apparent sample size.
+I resample **patients with all their scans and slices together**, maintaining
+the AD/NC patient counts in each draw. The same sampled patients are used for
+both models and all three seeds, giving paired model comparisons.
 
-The final workflow loads the six existing selected checkpoints; it constructs
-no optimizer and performs zero neural-weight updates. Total planned inference
-is 19,080 CALIBRATION plus 35,520 TEST slice presentations. The five case
-illustrations are separate image reads and require no additional forward
-pass. Actual decode counts are not independently instrumented. One allocated
-A100 runs the six model/seed calls sequentially, followed by CPU analysis of
-their saved records. This is the agreed single final-evaluation stage.
+**2,000 bootstrap draws**, fixed by seed **9001**, form an empirical distribution
+for each metric and for **GFNet minus CNN**. The 2.5th and 97.5th percentiles
+provide the reported **95% intervals**. Individual-seed results and their means
+are kept visible alongside these intervals. Predictions and metrics remain
+slice-based; patient grouping preserves the relationships among their images.
 
-For an allocated A100, one selected model can be evaluated with:
+### Inspect the Errors Behind the Scores
 
-```bash
-python predict.py evaluate --checkpoint RUN/best.pt --manifest MANIFEST.csv \
-  --data-root ADNI --seed 3710 --output EVALUATION/cnn-3710
-```
+Five case categories cover different failures: a high-confidence AD miss from
+each model, an error unique to each model, and a GFNet error close to its decision
+boundary. Seed **3710** supplies the reference selection, with one case per
+patient; the other seeds show whether the same slice produces a consistent
+mistake. This gives the case discussion both severe confident errors and
+uncertain or model-specific errors.
 
-The saved-record analysis accepts the six model/seed `test.json` files with
-`python predict.py analyze --inputs FILE1 FILE2 FILE3 FILE4 FILE5 FILE6
---manifest MANIFEST.csv --output EVALUATION/analysis --data-root ADNI`.
-It performs no model inference or calibration fitting. The optional image
-root enables the five case panels; numerical summaries use saved records.
+Performance is also compared by position within each twenty-slice acquisition
+and by the source slice-window start. These groups examine whether the data's
+preparation patterns accompany changes in classification or confidence.
 
-### Launch the one final evaluation
+Finally, parameter count, training time and peak memory describe the cost of
+learning each model. Inference compares synchronized model-forward time on the
+same A100 at batch 64, separately from image loading and the complete prediction
+loop. This distinguishes computational savings from differences in input I/O.
 
-The fixed evaluation implementation is commit `ef72844`. Deployment and
-the six selected weight/data bindings passed preflight with 3,354,394,624
-bytes available against a 1,342,177,280-byte output/headroom gate. Existing
-model payloads are retained; the evaluation produces predictions and figures,
-not new training checkpoints.
-
-The single submission entry returned **job 699939**. At **26 October 2026,
-16:08:04 Brisbane**, it was PENDING because nodes were unavailable, drained
-or reserved, with zero runtime/restarts and no actual GPU allocation. No
-evaluation child, completed prediction file or final scientific result existed
-at that observation. The request is one A100, two CPUs and two hours across
-comp3710/a100/a100-grind. Six fixed model calls will each perform CALIBRATION
-then TEST, followed by one CPU saved-record analysis. The planned 54,600
-inference presentations remain a budget until completed outputs reconcile.
+## Results
 
 ### Record final full-coverage TEST slice classification
 
@@ -2479,8 +1333,21 @@ job; writing or simplifying code does not reproduce those experiments.
 
 ## References
 
+- Geifman and El-Yaniv, *Selective Classification for Deep Neural Networks*, 2017.
+  [Paper](https://arxiv.org/abs/1705.08500).
+- Xiao et al., *Early Convolutions Help Transformers See Better*, NeurIPS 2021.
+  [Paper](https://arxiv.org/abs/2106.14881).
+- Müller, Kornblith and Hinton, *When Does Label Smoothing Help?*, NeurIPS 2019.
+  [Paper](https://arxiv.org/abs/1906.02629).
+- Simonyan and Zisserman, *Very Deep Convolutional Networks for Large-Scale
+  Image Recognition*, ICLR 2015. [Paper](https://arxiv.org/abs/1409.1556).
+- Lin, Chen and Yan, *Network in Network*, ICLR 2014.
+  [Paper](https://arxiv.org/abs/1312.4400).
+- Dickerson et al., *The Cortical Signature of Alzheimer's Disease*,
+  Cerebral Cortex, 2009. [Article](https://pmc.ncbi.nlm.nih.gov/articles/PMC2638813/).
 - Rao et al., *Global Filter Networks for Image Classification*, NeurIPS 2021.
-  [Paper](https://arxiv.org/abs/2107.00645), [reference code](https://github.com/shakes76/GFNet).
+  [Paper](https://arxiv.org/abs/2107.00645), [authors' code](https://github.com/raoyongming/GFNet),
+  [course fork](https://github.com/shakes76/GFNet).
 - Wu and He, *Group Normalization*, ECCV 2018.
   [Paper](https://arxiv.org/abs/1803.08494).
 - Loshchilov and Hutter, *Decoupled Weight Decay Regularization*, ICLR 2019.
