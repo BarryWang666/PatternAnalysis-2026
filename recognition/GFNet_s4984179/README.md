@@ -11,6 +11,9 @@ from incorrect predictions descriptively; confident errors remain in both models
 The [selective-prediction analysis](#test-whether-rejecting-uncertain-slices-reduces-errors)
 finds lower error rates after rejection, with CNN outperforming GFNet at the
 common 80% coverage coordinate. Both still retain substantial AD false negatives.
+The [five fixed error cases and preparation sensitivity](#investigate-real-slice-errors-and-preparation-sensitivity)
+show shared confident failures, architecture disagreement and seed-dependent
+boundary predictions. Preparation-associated differences remain a limitation.
 The completed [final TEST classification](#record-final-full-coverage-test-slice-classification)
 gives CNN accuracies of **82.77%, 80.68% and 81.96%**, and GFNet accuracies of
 **71.66%, 71.20% and 72.11%**, across seeds 3710--3712. CNN exceeds 80% in
@@ -2226,6 +2229,137 @@ All policy counts, saved tied-score curve groups, sixty common coordinates
 and AURC sums agree with direct saved-record arithmetic. The original figure
 and bootstrap summaries are reused; no inference, calibration fitting,
 bootstrap rerun or TEST threshold optimization was performed for this report.
+
+### Investigate real slice errors and preparation sensitivity
+
+Summary metrics cannot explain which mistakes survive calibration and rejection.
+The five error slots were specified before final evaluation: GFNet confident
+false negative, CNN confident false negative, GFNet-only error, CNN-only error,
+and a GFNet error nearest its decision boundary. Seed 3710 supplies the paired
+reference predictions; the other seeds provide context rather than an ensemble.
+Select slots sequentially, exclude patients already used, and break exact score
+ties by image path. All five slots found eligible cases without fallback.
+These deliberately selected errors illustrate failure mechanisms; their frequency
+cannot estimate population error rates.
+
+![Five predeclared TEST error cases with all six separate model predictions](figures/final_failure_cases.png)
+
+The panels show the saved native grayscale slices with their manifest labels,
+paths and six model predictions. The compact table refers to seed 3710 and
+reports **predicted class; raw → calibrated confidence**. Confidence is in the
+predicted class, including when that class is wrong. Values rounded to 100.00%
+are not evidence of certainty; the complete margins remain in saved records.
+
+| Case | True label | CNN-3710 prediction and confidence | GFNet-3710 prediction and confidence |
+| --- | --- | --- | --- |
+| 1: GFNet confident FN | AD | AD; 64.00% → 54.85% | NC; 100.00% → 94.38% |
+| 2: CNN confident FN | AD | NC; 100.00% → 98.55% | NC; 99.79% → 83.51% |
+| 3: GFNet-only error | NC | NC; 91.66% → 69.24% | AD; 99.98% → 91.02% |
+| 4: CNN-only error | AD | NC; 100.00% → 96.93% | AD; 64.25% → 53.86% |
+| 5: GFNet wrong near boundary | NC | NC; 99.74% → 88.18% | AD; 50.01% → 50.00% |
+
+1. **A confident GFNet miss persists across seeds.** Case 1 is slice
+   `382181_79.jpeg`, patient `018_S_5240`. All three GFNet fits predict NC
+   for this AD slice, and all pass their frozen rejection thresholds;
+   GFNet-3710 remains above 0.90 even after calibration. CNN-3710 is correct
+   but uncertain enough to be rejected. CNN-3711/3712 instead also miss it.
+   This illustrates both persistent GFNet overconfidence and CNN seed instability,
+   rather than an error that one temperature parameter repairs.
+2. **Agreement can be confidently wrong.** For case 2, `1240482_109.jpeg`,
+   patient `168_S_6828`, every one of the six fits predicts NC and every
+   fixed policy retains the prediction. CNN-3710's calibrated confidence is
+   still 98.55%. Repeating a recipe across seeds therefore does not ensure
+   that a shared error becomes uncertain; agreement is not an external diagnosis.
+3. **Architecture disagreement persists across seeds.** Case 3,
+   `1253141_101.jpeg`, patient `031_S_4021`, is NC. All CNN fits classify
+   it correctly, while all GFNet fits predict AD; every policy retains it.
+   GFNet-3710 remains 91.02% confident after calibration. This is evidence
+   of different learned decisions, but without feature attribution or a
+   controlled intervention it does not identify which image feature caused them.
+4. **A correct alternative may be rejected while an error is retained.**
+   Case 4, `1413656_89.jpeg`, patient `057_S_6869`, is AD. All three CNNs
+   miss it and retain the miss. GFNet-3710/3711 predict AD correctly with
+   calibrated confidence near 54%, so their fixed policies reject it.
+   GFNet-3712 instead predicts NC at 74.75% calibrated confidence and retains
+   that wrong prediction. The label "CNN-only error" describes the reference
+   seed, not every fitted seed.
+5. **A model boundary is not a clinical ambiguity label.** Case 5,
+   `958499_102.jpeg`, patient `019_S_6186`, is NC. GFNet-3710's positive
+   raw margin is only 0.0002827: the 50.00% calibrated display is rounded,
+   not an exact class tie. Its policy rejects this false positive. Both other
+   GFNet seeds and all CNNs classify it correctly. This is uncertainty in one
+   fitted model's decision; the records do not establish medical ambiguity.
+
+The visible tissue extent and prepared black backgrounds differ between panels.
+These observations motivate checking preparation and slice position, but do
+not establish an anatomical cause of an error. A single prepared 2D slice,
+without clinical review or feature attribution, cannot justify claims that a
+specific visible structure caused the network's prediction. Also, paths with
+`AD_NC/train/` identify the supplied source folder: cases 1 and 5 belong to
+the frozen TEST manifest, and none of the five patients belongs to TRAIN.
+This membership check does not undo the previously disclosed cohort exposure.
+
+#### Examine slice position using the unchanged population and policies
+
+The saved sensitivity report groups each acquisition's twenty prepared slices
+by zero-based rank: 0--4, 5--9, 10--14 and 15--19. Every group contains
+1,480 slices from all 136 TEST patients, with 805 NC and 675 AD slices.
+The table gives arithmetic means over the three seeds. Retained risk applies
+each fit's original CALIBRATION threshold; no subgroup temperature or cutoff
+is fitted. Accuracy still counts every slice in the subgroup.
+
+| Slice ranks | Slices / patients | CNN accuracy | GFNet accuracy | CNN retained risk | GFNet retained risk |
+| --- | --- | --- | --- | --- | --- |
+| 0--4 | 1,480 / 136 | 83.20% | 72.59% | 11.91% | 22.94% |
+| 5--9 | 1,480 / 136 | 82.43% | 72.50% | 12.17% | 22.82% |
+| 10--14 | 1,480 / 136 | 79.91% | 69.95% | 14.23% | 26.14% |
+| 15--19 | 1,480 / 136 | 81.67% | 71.58% | 13.24% | 24.94% |
+
+Both recipes perform worst at ranks 10--14, despite identical class counts
+and patient membership across rank groups. This supports position-associated
+performance variation within the supplied preparation. Rank is not a registered
+anatomical coordinate across subjects, and no subgroup intervals were computed,
+so it does not establish a particular anatomical explanation or a stable
+population effect. No rank group is removed to improve the main accuracy.
+
+#### Keep source-window and diagnosis confounding visible
+
+Define a source-window start as `slice_index - slice_rank`, using the supplied
+filename index and within-acquisition rank. This is a preparation descriptor,
+not an input to the network or a clinical variable. Its TEST strata have very
+different class proportions and patient counts:
+
+| Source-window start | Slices | Patients | AD slice share | CNN mean accuracy | GFNet mean accuracy |
+| --- | --- | --- | --- | --- | --- |
+| 67 | 20 | 1 | 0.00% | 85.00% | 40.00% |
+| 70 | 20 | 1 | 0.00% | 48.33% | 85.00% |
+| 75 | 500 | 8 | 100.00% | 90.00% | 68.87% |
+| 78 | 2,320 | 48 | 54.31% | 82.63% | 68.48% |
+| 88 | 1,540 | 33 | 46.75% | 78.61% | 74.39% |
+| 89 | 20 | 1 | 0.00% | 85.00% | 100.00% |
+| 94 | 1,160 | 43 | 17.24% | 82.30% | 76.44% |
+| 95 | 340 | 13 | 5.88% | 78.43% | 68.14% |
+
+The start-75 group contains only AD slices, while several groups contain only
+NC. An apparent model advantage in one group can therefore reflect diagnosis
+mix, different patients or acquisition preparation together. The start-89
+GFNet result of 100% covers just twenty slices from one NC patient; it is
+not evidence of perfect generalization. Patients can appear in multiple
+source-window groups through different acquisitions, so these patient counts
+must not be summed as independent cohorts.
+
+The network receives pixels, not source-window indices or diagnosis directories.
+Potential shortcut information would come from image characteristics associated
+with preparation. These descriptive associations neither prove that the network
+uses such a shortcut nor establish disease-specific features independent of it.
+Preparation-matched and external-data validation would be needed to distinguish
+these explanations. Neither the cohort, selected models nor the frozen policies
+are changed by this inspection.
+
+All five cases, their thirty saved predictions and the 72 model/subgroup count
+reports agree with the manifest and saved predictions. The original case panel
+is reused without opening source medical images or running another model,
+calibration fit, bootstrap or case-selection pass.
 
 ## Artificial Intelligence Usage Disclosure
 
