@@ -14,6 +14,9 @@ common 80% coverage coordinate. Both still retain substantial AD false negatives
 The [five fixed error cases and preparation sensitivity](#investigate-real-slice-errors-and-preparation-sensitivity)
 show shared confident failures, architecture disagreement and seed-dependent
 boundary predictions. Preparation-associated differences remain a limitation.
+The [cost comparison and engineering recommendation](#weigh-computational-cost-against-reliability-and-accuracy)
+favor the calibrated CNN for this prototype. GFNet uses less measured GPU
+memory and faster batch forwards, but its reliability and accuracy are weaker.
 The completed [final TEST classification](#record-final-full-coverage-test-slice-classification)
 gives CNN accuracies of **82.77%, 80.68% and 81.96%**, and GFNet accuracies of
 **71.66%, 71.20% and 72.11%**, across seeds 3710--3712. CNN exceeds 80% in
@@ -2360,6 +2363,112 @@ All five cases, their thirty saved predictions and the 72 model/subgroup count
 reports agree with the manifest and saved predictions. The original case panel
 is reused without opening source medical images or running another model,
 calibration fit, bootstrap or case-selection pass.
+
+### Weigh computational cost against reliability and accuracy
+
+Efficiency is a measured trade-off, not a consequence of counting parameters
+alone. The selected CNN has **1,173,154 parameters**, while the selected
+six-block convolutional GFNet has **4,025,058**, about **3.43 times as many**.
+Nevertheless GFNet uses substantially less recorded GPU memory and has faster
+batch forwards in these implementations. Its compact token representation
+and the CNN's spatial feature maps differ; this comparison does not isolate
+the cost of a Fourier filter from the rest of either architecture.
+
+The following table reuses saved histories and the final TEST profiles.
+"Terminal / selected epoch" separates the full training effort from the
+earlier weights chosen by TUNE. Training time sums every recorded TRAIN
+and TUNE loop through termination, rather than stopping the sum at the best
+epoch. All memory columns are **allocated / reserved GiB**, using 2^30 bytes
+per GiB. Reserved memory is the PyTorch allocator pool, not an additional
+amount to add to allocated memory or a measurement of whole-card use.
+
+| Model | Seed | Terminal / selected epoch | TRAIN + TUNE loops (min) | Training peak (GiB) | TEST loop wall (s) | Forward (ms/slice) | TEST peak (GiB) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| CNN | 3710 | 22 / 14 | 20.49 | 8.697 / 13.762 | 9.854 | 0.624 | 2.777 / 4.832 |
+| CNN | 3711 | 26 / 18 | 24.19 | 8.697 / 13.762 | 6.693 | 0.496 | 2.777 / 4.832 |
+| CNN | 3712 | 24 / 16 | 22.69 | 8.697 / 13.762 | 6.793 | 0.496 | 2.777 / 4.832 |
+| GFNet | 3710 | 20 / 7 | 16.03 | 2.048 / 2.576 | 5.688 | 0.342 | 0.437 / 0.734 |
+| GFNet | 3711 | 21 / 13 | 18.05 | 2.048 / 2.576 | 5.791 | 0.344 | 0.437 / 0.734 |
+| GFNet | 3712 | 27 / 19 | 21.92 | 2.048 / 2.576 | 5.756 | 0.342 | 0.437 / 0.734 |
+
+![Parameter count, recorded training allocation and batch forward cost](figures/final_cost.png)
+
+Bars show seed means and black dots show the individual observations;
+identical parameter and training-memory values overlap. Mean recorded
+TRAIN-plus-TUNE time is **22.46 minutes for CNN and 18.67 for GFNet**.
+These are complete histories for the six selected fits, not the total cost
+of the development search. Training-loop timers include data handling and
+training/evaluation work but exclude checkpoint persistence, job setup and
+queue waiting. Different terminal epochs and historical allocations also
+affect their totals, so this is not a matched fixed-epoch training benchmark.
+
+All final inference profiles come from the same A100-PCIE-40GB on a100-1,
+with FP32/complex64, batch size 64 and two intra-op/two inter-op threads.
+Each TEST loop covers 5,920 slices in 93 batches, retaining the final 32.
+The mean synchronized forward-call cost is **0.539 ms/slice for CNN versus
+0.343 for GFNet**, a **36.37% reduction** in this pass. The timer surrounds
+the model call and its completion synchronization, excluding host-to-device
+transfer and image loading. It is batch-amortized forward time, not the
+latency of an isolated clinical request.
+
+TEST-loop wall time includes image loading, transfers and prediction-record
+construction; its means are 7.780 and 5.745 seconds respectively. It excludes
+checkpoint loading, model construction, the preceding CALIBRATION pass and
+temperature fitting, later metric calculation, output persistence and figures.
+The first TEST batch is included, but TEST follows CALIBRATION in the same
+process. There is no separate repeated latency benchmark or uncertainty
+interval for timing; order, caching and runtime variation can affect it.
+
+Recorded peak allocated training memory is **8.697 GiB for CNN versus
+2.048 GiB for GFNet**, a **76.45% reduction**. Final TEST allocated peaks
+are 2.777 versus 0.437 GiB. GFNet therefore has real measured memory and
+throughput benefits here, despite its larger parameter count. These benefits
+must remain visible even when the scientific recommendation favors CNN.
+
+#### Engineering recommendation from the complete evidence
+
+For this **confidence-aware slice-classification prototype**, prefer the
+**CNN with its frozen CALIBRATION-only temperature scaling** over the
+selected GFNet recipe. This recommendation prioritizes probability reliability
+and the usefulness of error rejection, then classification and cost:
+
+| Decision evidence | Observation | Consequence |
+| --- | --- | --- |
+| Probability reliability | Calibrated mean NLL 0.4222 vs 0.5489 and Brier 0.1319 vs 0.1857, CNN vs GFNet; paired differences favor CNN | CNN gives better probability scores on this cohort. |
+| Calibration gap | Mean calibrated ECE 0.0212 vs 0.0301; the paired difference interval includes zero | Do not claim a clear calibrated-ECE advantage from the point estimates alone. |
+| Useful rejection | At common 80% coverage, mean risk is 12.54% vs 23.95%; the frozen-policy risk difference also favors CNN | CNN leaves a smaller error burden at the examined operating range. |
+| Classification | All CNN seeds exceed 80%; GFNet seeds remain 71.20--72.11% | GFNet's assessment accuracy goal remains unmet. CNN's result does not substitute for it. |
+| Consequential failures | Both retain confident AD misses, including one case missed by all six fits | Neither is established as a safe automatic diagnostic system. |
+| Resource trade-off | GFNet has lower measured GPU memory and forward time, but 3.43 times the parameters | Its efficiency advantage is real, but does not establish comparable reliability or accuracy. |
+
+The mean slice-accuracy difference is **GFNet minus CNN = -10.15 percentage
+points**, with the existing paired 95% interval **[-14.41, -5.69]**. Together
+with the probability-score and selective-risk evidence, this supports the
+baseline preference for these frozen recipes. It does not imply every CNN
+is better than every GFNet, or that global filtering itself causes the gap:
+the models differ in architecture and training recipe, including augmentation,
+and this is not an otherwise identical operator ablation.
+
+The experiments also explain why a single appealing metric is insufficient.
+Temperature scaling makes confidence numerically more realistic but leaves
+classifications and error ranking unchanged. Fewer high-confidence errors can
+come with far fewer high-confidence predictions. A faster, smaller-memory fit
+can still miss more AD slices. The engineering choice must consider these
+effects together rather than use calibration or resource savings to excuse
+the unmet classification target.
+
+This recommendation is bounded by prior cohort exposure, repeated TUNE
+development, correlated slices, preparation/diagnosis associations and the
+absence of external-site or clinical-ambiguity validation. The bootstrap
+conditions on the selected fits and fixed calibration, not the whole model
+development process. Before any diagnostic use, evidence addressing those
+limits and the retained false negatives would be required. The present result
+is a coursework prototype comparison, not a clinical deployment claim.
+
+The cost figure and measurements were reused from saved outputs. Time sums,
+unit conversions, per-slice forward arithmetic and the six profile/history
+bindings agree; no new training, inference, benchmarking or bootstrap run
+was needed to make this recommendation.
 
 ## Artificial Intelligence Usage Disclosure
 
