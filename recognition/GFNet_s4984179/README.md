@@ -1,6 +1,69 @@
-# GFNet and CNN for Confidence-Aware ADNI Slice Classification
+# Reading the Brain: Do Global Features Make Predictions More Trustworthy?
 
-COMP3710 · s4984179
+**GFNet and CNN for Alzheimer’s MRI Slice Classification**
+
+**Xingyu Wang** · Student ID: s4984179
+
+COMP3710 · Final Project Report · 2026
+
+The University of Queensland
+
+## Abstract
+
+[Alzheimer's disease (AD)](https://health.nih.gov/health-topics-a-z/alzheimers-disease)
+progressively affects memory and everyday independence, placing a lasting
+burden on patients and caregivers. Brain MRI supports the study of
+disease-associated structural changes, motivating image classifiers that can
+recognize these patterns and indicate when their predictions are unreliable.
+Because AD-related changes can involve separated brain regions, GFNet's
+global feature mixing offers an appealing alternative to the local feature
+hierarchy of a CNN.
+
+This project compares GFNet and a four-stage CNN on individual ADNI MRI
+slices, examining confidence reliability, selective prediction,
+classification accuracy and computational cost. Both models are trained
+from scratch on patient-disjoint partitions and evaluated across three
+training seeds. Retaining the most confident 80% of predictions gave a mean
+error rate of **12.54% for CNN, compared with 23.95%
+for GFNet**. It also exceeded 80% TEST slice accuracy in all three seeds,
+averaging **81.80%; GFNet averaged 71.66%**. Temperature scaling improved
+both models' probability quality, although confident AD misses remained.
+GFNet used less GPU memory and had faster forwards.
+
+Adding a convolutional stem produced GFNet's clearest architectural gain,
+suggesting that useful local features were a bottleneck before global mixing
+could help. A temperature-calibrated CNN is the stronger choice for this
+task. Future work could add a lightweight Fourier branch to its local
+feature hierarchy, testing whether global relationships become more useful
+once those features are established.
+
+### Report Guide
+
+<pre>
+Report
+├── Motivation and Design
+│   ├── <a href="#research-motivation-ad-imaging-patterns-and-global-feature-modelling">Research motivation</a>
+│   ├── <a href="#data-partitioning-preventing-patient-leakage">Data partitioning</a>
+│   ├── <a href="#model-design-for-native-mri-slices">Model design</a>
+│   └── <a href="#training-and-model-selection">Training and selection</a>
+├── Experiments and Evaluation
+│   ├── <a href="#development-from-patient-balancing-to-slice-level-learning">Experimental development</a>
+│   └── <a href="#evaluating-confidence-and-selective-prediction">Evaluation methods</a>
+├── Findings and Recommendation
+│   ├── <a href="#results">Results</a>
+│   │   ├── <a href="#confidence-reliability">Confidence reliability</a>
+│   │   ├── <a href="#selective-prediction">Selective prediction</a>
+│   │   ├── <a href="#full-coverage-slice-classification">Classification accuracy</a>
+│   │   ├── <a href="#failure-cases-and-preparation-sensitivity">Failure cases and preparation sensitivity</a>
+│   │   └── <a href="#computational-cost">Computational cost</a>
+│   ├── <a href="#conclusions-and-engineering-recommendation">Conclusions and recommendation</a>
+│   └── <a href="#further-development">Further development</a>
+└── Code and Supporting Material
+    ├── <a href="#files-and-reproduction">Files and reproduction</a>
+    ├── <a href="#feasibility-review">Feasibility review</a>
+    ├── <a href="#artificial-intelligence-usage-disclosure">AI disclosure</a>
+    └── <a href="#references">References</a>
+</pre>
 
 ## Research Motivation: AD Imaging Patterns and Global Feature Modelling
 
@@ -34,24 +97,21 @@ mixes spatially separated features directly within each global filter layer.
 Within an MRI slice, direct global mixing could combine separated anatomical
 features when a local region alone is ambiguous.
 
-Both models are trained from scratch on the same ADNI slices. The comparison
-asks whether **direct global mixing or a progressively constructed local
-hierarchy** produces confidence that better reflects correctness, particularly
-near the model decision boundary. Selective prediction measures how errors
-change when low-confidence predictions are rejected. Slice accuracy and
-computational cost are also compared.
+The working hypothesis was that **directly combining separated anatomical
+cues would help GFNet resolve ambiguous slices and give more informative
+confidence**. The comparison tests this through classification, error
+recognition and selective prediction, alongside computational cost.
 
 ## Data Partitioning: Preventing Patient Leakage
 
 **216 of the 331 patients in the supplied test folder also appear in the
-training folder: 65.3% of the original test patients.** The acquisition IDs
-are different, but source metadata links them to the same people.
+training folder: 65.3% of the original test patients.** The filenames identify
+acquisitions; ADNI subject identifiers in the source metadata link different
+acquisitions to the same person.
 
-Different scans from one person retain related anatomical characteristics.
-A model trained on that person's images may exploit familiar individual
-features when classifying their other scans. The resulting accuracy and
-confidence can then give an optimistic impression of performance on new
-patients.
+Scans from one person share anatomical characteristics. Recognizing a familiar
+patient could inflate accuracy and confidence on their other scans, giving an
+optimistic impression of performance on new patients.
 
 I split **patients first**, keeping every acquisition and slice
 from a patient together. The complete dataset of 680 patients, 1,526
@@ -62,10 +122,9 @@ acquisitions and 30,520 slices is retained; only partition membership changes.
 *Left: 216 patients occur in both supplied folders. Right: each patient is
 assigned to one experimental role, together with all their scans and slices.*
 
-The new split uses four roles. TRAIN learns model weights; TUNE supports
-architecture and checkpoint selection. CALIBRATION is kept separate because
-the project also fits confidence scaling and rejection thresholds. TEST is
-reserved for comparing the selected models and policies.
+TRAIN learns model weights; TUNE supports architecture and checkpoint
+selection. CALIBRATION fits confidence scaling and rejection thresholds
+after selection. TEST compares the resulting models and policies.
 
 A **60/10/10/20 patient allocation** gives most of the cohort to learning
 while supporting these three evaluation tasks. Patients are stratified by
@@ -80,14 +139,28 @@ architectures and every training seed.
 | TEST | Compare selected models and policies | 136 (44 / 92) | 296 | 5,920 |
 | **Total** | | **680 (221 / 459)** | **1,526** | **30,520** |
 
+The data inventory also showed a strong association between preparation
+windows and diagnosis. Each acquisition supplies twenty slices, but their
+starting source indices differ. Across the complete dataset, windows starting
+at **75 were 99.2% AD**, compared with **12.6% AD** for windows starting at 94.
+
+![Acquisition counts and diagnosis composition by preparation window](figures/data_preparation_composition.png)
+
+*Whole-dataset inventory: acquisition counts by first prepared slice index
+(left), and the AD proportion within each group (right).*
+
+These imbalances raised the possibility that image preparation could provide
+class-related cues alongside anatomy. I retained the window start and each
+slice's position within its twenty-slice acquisition to examine whether
+classification and confident errors varied across these groups in the final
+evaluation.
+
 ## Model Design for Native MRI Slices
 
 Both models take a **240 × 256 single-channel image**, scaled to `[0,1]`.
-Keeping the native canvas preserves its aspect ratio and avoids interpolation
-before feature extraction. Unlike the paper's 224 × 224 RGB input, the
-network is adapted to the supplied grayscale rectangle, avoiding square
-resizing or redundant colour channels. The CNN builds a local hierarchy;
-GFNet adapts global filtering to the same rectangular geometry.
+Adapting the paper's 224 × 224 RGB design to this native grayscale rectangle
+preserves the aspect ratio and avoids interpolation or redundant colour
+channels.
 
 ### CNN: A Compact Local Feature Hierarchy
 
@@ -96,8 +169,9 @@ pooling. Stacking small kernels expands local context while adding a second
 nonlinear transformation, following the design principle used in
 [VGG (Simonyan and Zisserman, 2015)](https://arxiv.org/abs/1409.1556).
 Two stride-one 3 × 3 layers cover a 5 × 5 neighbourhood before pooling.
-Four stages reduce the native image to a 15 × 16 feature map, while channels
-increase from 32 to 256 as the spatial grid shrinks.
+Four stages reduce the native image to a 15 × 16 feature map. Channels
+increase from 32 to 256 as that grid shrinks, adding feature capacity where
+it costs less than widening the early, high-resolution layers.
 
 | Stage | Output channels | Spatial size |
 | --- | ---: | --- |
@@ -112,7 +186,8 @@ increase from 32 to 256 as the spatial grid shrinks.
 Convolutions use **GroupNorm with eight groups and GELU**. GroupNorm computes
 statistics within each example, keeping normalization independent of batch
 composition ([Wu and He, 2018](https://arxiv.org/abs/1803.08494)). Eight groups
-divide all four channel widths consistently.
+divide all four channel widths. GELU keeps the basic activation choice
+consistent with GFNet's MLP.
 
 Global average pooling keeps the classifier compact, following the approach
 introduced in [Network in Network (Lin et al., 2014)](https://arxiv.org/abs/1312.4400).
@@ -125,8 +200,10 @@ complete CNN has **1,173,154 parameters**.
 The initial GFNet projects non-overlapping **16 × 16 patches** into 256
 channels. This patch size divides both image dimensions exactly, producing
 a **15 × 16 grid of 240 tokens**. It retains the paper's patch size but adapts
-the original 14 × 14 grid to the native MRI dimensions. The grid dimensions
-are carried explicitly through the Fourier layer.
+the original 14 × 14 grid to the native MRI dimensions. An 8 × 8 patch would
+quadruple the token count; a stride-32 projection would need padding or cropping
+to cover height 240. Patch 16 covers the image exactly with a compact grid,
+whose dimensions are carried through the Fourier layer.
 
 A real FFT reduces the stored frequency grid to **15 × 9**, with a learned
 complex response for each frequency and channel. The core implementation in
@@ -144,7 +221,9 @@ grid = torch.fft.irfft2(
 The transform operates on the two spatial axes. The inverse uses the original
 height and width, so the tokens return to their rectangular layout. Learned
 responses let different layers and channels emphasize different frequency
-patterns, as illustrated in the authors' visualization below.
+patterns. These filters are learned across training images and shared at
+inference, rather than recomputed for each input as attention weights are.
+The authors' visualization below shows this learned specialization.
 
 ![Learned filters from different layers of the authors' GFNet-XS model](figures/gfnet_author_filters.png)
 
@@ -171,8 +250,9 @@ head produce the class logits.
 
 The starting point used twelve GFNet blocks and width 256, matching
 **GFNet-Ti**, the paper's smallest flat variant
-([Table 2](https://arxiv.org/pdf/2107.00645)). For a cohort of 680 patients,
-I started with this smaller variant rather than the wider ImageNet models.
+([Table 2](https://arxiv.org/pdf/2107.00645)). With only 408 patients available
+for TRAIN, this smaller variant was a more manageable starting point than
+the wider ImageNet models.
 
 Later experiments favoured a **convolutional stem and six blocks**. The stem
 applies four overlapping 3 × 3 stride-two convolutions with 32, 64, 128 and
@@ -181,10 +261,8 @@ the same 15 × 16 token grid. Compared with the paper's non-overlapping patch
 projection, it lets neighbouring regions interact before the Fourier layers.
 
 Reducing depth lowers capacity while retaining width 256 and MLP ratio 4.
-The final ratio choice follows the three-seed comparison with ratio 2;
-the development section presents those results alongside the stem and depth
-experiments. DropPath reaches 0.1 as added regularization, compared with 0
-for the paper's GFNet-Ti ([Appendix B](https://arxiv.org/pdf/2107.00645)).
+DropPath reaches 0.1 as added regularization, compared with 0 for the paper's
+GFNet-Ti ([Appendix B](https://arxiv.org/pdf/2107.00645)).
 
 | Configuration | Input embedding | GFNet blocks | Width / MLP ratio | Parameters |
 | --- | --- | ---: | --- | ---: |
@@ -203,25 +281,14 @@ Patient-balanced sampling changes that distribution because patients
 contribute different numbers of scans; its consequences are examined in
 the development section.
 
-Both models start from random initialization and learn from the same MRI
-data, using cross-entropy to learn class decisions and probabilities.
+### Learning Rate and Regularization
 
-### Address Generalization, Not Just Training Loss
-
-TRAIN loss fell while TUNE performance stalled. I compared learning rate,
-weight decay and augmentation separately to investigate this generalization
-gap.
-
-[AdamW](https://arxiv.org/abs/1711.05101) separates weight decay from adaptive
-gradient updates, making regularization strength a distinct choice. In the
-initial learning-rate comparison, CNN reached **84.41% TUNE accuracy at
-3e-4**, against **81.71% at 1e-4**. GFNet gained a little accuracy at the
-lower rate but produced worse NLL and more confident errors. Subsequent
-experiments kept 3e-4 while investigating its input representation and capacity.
-
-Small TRAIN rotations (±5°) and translations (±2%) improved GFNet's TUNE
-accuracy and were retained to introduce positional variation. CNN continued
-with the established unaugmented baseline during this investigation.
+Falling TRAIN loss alongside stalled TUNE performance motivated separate
+comparisons of learning rate, regularization and input representation.
+[AdamW](https://arxiv.org/abs/1711.05101) keeps weight decay separate from
+adaptive gradient updates, allowing its strength to be tested directly.
+The settings below describe the final recipes; the development section
+explains the comparisons behind them.
 
 | Setting | Final recipe |
 | --- | --- |
@@ -231,15 +298,14 @@ with the established unaugmented baseline during this investigation.
 | Training limit | 30 epochs; early stopping from epoch 20 |
 | Patience | Eight epochs without improved TUNE accuracy |
 | Loss | Cross-entropy, without label smoothing or MixUp |
+| TRAIN augmentation | CNN: none; GFNet: rotations ±5°, translations ±2% |
 | Training seeds | 3710, 3711, 3712 |
 
-Native-resolution memory measurements supported batch 64 for both models.
-The thirty-epoch ceiling balances learning time against the cost of multiple
-comparisons, permitting **556,800 TRAIN presentations**: slightly more than
-the earlier sixty sampled epochs. Warm-up softens the initial learning-rate
-increase; cosine decay makes later updates smaller. A minimum of twenty
-epochs leaves an initial learning period, followed by patience-based stopping
-when TUNE accuracy remains stalled.
+Memory measurements supported batch 64 for both models. The thirty-epoch
+ceiling permits about **14% more TRAIN presentations** than V1's sixty sampled
+epochs while keeping the comparison manageable. Warm-up limits early updates;
+cosine decay reduces later ones. A twenty-epoch minimum avoids stopping fits
+during their early learning period.
 
 ### Accuracy and Confidence Can Favour Different Models
 
@@ -248,13 +314,10 @@ the highest TUNE accuracy, with lower slice NLL breaking ties. Confidence
 reliability remains the central research question, evaluated alongside
 classification performance.
 
-In the three-seed CNN comparison, MixUp improved
-mean TUNE NLL from **0.7242 to 0.4257**, while mean accuracy fell from
-**82.79% to 82.54%**. The accuracy-first rule retained the unmixed CNN.
-The final recommendation also considers MixUp's better probability quality.
-
-Final recipe comparisons use training seeds **3710–3712** to check whether
-an improvement persists across initializations.
+An accuracy gain can come with poorer probabilities, so NLL, class recall
+and confident errors remain part of the comparison. Training seeds
+**3710–3712** test whether gains persist across initializations, using one
+common recipe per architecture.
 
 ## Development: From Patient Balancing to Slice-Level Learning
 
@@ -281,9 +344,8 @@ scans so each patient contributed equally. This favoured confident, correct
 scan averages, although the network was asked to classify individual images.
 
 Averaging can hide a wrong slice prediction among stronger predictions from
-the same scan. A checkpoint could improve the scan average while
-misclassifying more individual images. V1's NLL measured the quality of
-those averages, leaving slice errors less visible in model selection.
+the same scan. Improving those averages could select a checkpoint that
+misclassified more individual images.
 
 V1 compared peaks of **1e-4, 3e-4 and 1e-3** for each model, then trained two
 additional seeds at the selected 3e-4 rate. Across those ten fits, every
@@ -303,11 +365,14 @@ predictions on other patients.
 3712 at 3e-4. The falling TRAIN loss contrasts with rising TUNE NLL and
 confidence on errors. In the legend, lr0/lr1/lr2 denote 1e-4/3e-4/1e-3.*
 
+A **high-confidence AD false negative** is an AD slice classified as NC with
+at least **0.90 confidence in that NC prediction**.
+
 CNN learned a stronger classifier, but its probability quality also worsened
 late in training. For seed 3711, the original rule selected epoch 42, with
-**80.70% TUNE slice accuracy and 288 high-confidence AD false negatives**.
-Looking back at the same history, epoch 33 had **82.24% accuracy and 146**
-such false negatives. The scan-NLL rule selected a later checkpoint with
+**80.70% TUNE slice accuracy**. Looking back at the same history, epoch 33 had
+**82.24% accuracy and about 49% fewer high-confidence AD misses**.
+The scan-NLL rule selected a later checkpoint with
 lower slice accuracy and more confident AD misses.
 
 ![V1 CNN training, TUNE accuracy, TUNE NLL and confidence on errors](figures/v1_cnn_histories.png)
@@ -324,14 +389,11 @@ The original selected models produced these TEST slice accuracies:
 | GFNet | 54.39% | 58.70% | 54.75% | 55.95% |
 
 CNN's mean concealed a seed below 80%; GFNet was far below the target.
-V1 exposed the models to an NC-heavy sample and selected them on scan
-averages. These choices changed the influence of individual slice errors
-on learning and selection. GFNet also had a generalization problem beyond
-checkpoint choice: even its retrospective best TUNE epochs stayed below 68%.
-
-CNN reached much higher accuracy under the same sampling scheme. Reduced AD
-exposure could contribute to the errors, but the architectural gap also
-suggested investigating GFNet's feature representation and capacity.
+The NC-heavy stream and scan-based selection both worked against the slice
+objective. GFNet's retrospective best TUNE epochs also stayed below 68%
+while TRAIN loss kept falling, making more training an unpromising remedy.
+CNN's stronger performance under the same sampling scheme pointed towards
+GFNet's input representation and capacity as further problems to investigate.
 
 A smaller **width-128 GFNet** tested the capacity hypothesis before the
 redesign. Over fifteen sampled epochs, its maximum TUNE accuracy was only
@@ -374,13 +436,10 @@ CNN achieved higher accuracy at 3e-4 but lower NLL at 1e-4. GFNet still
 showed a large gap between fitting and generalization: at 3e-4, TRAIN
 accuracy reached **99.91%**, while final TUNE accuracy fell to **61.36%**.
 Full-slice training and accuracy-based selection had not closed that gap.
-Lowering the learning rate added only 47 correct TUNE images at selection
-and more than doubled high-confidence errors.
-
-I kept the patch-based architecture for three comparisons: centering pixels
-from [0,1] to [-1,1] to test input scale; increasing weight decay from 0.01 to
-0.05 to constrain fitting; and adding small rotations and translations to
-test positional sensitivity.
+Lowering the learning rate gained only **1.64 percentage points in accuracy**
+and more than doubled high-confidence errors. I used 3e-4 as the reference
+for the next comparisons, aiming to improve its image representation without
+starting from the lower rate's much poorer probability quality.
 
 ### Small Position Changes Helped More Than Centering or Stronger Decay
 
@@ -412,16 +471,15 @@ changes; crops and flips were left out of this comparison.
 High-confidence errors use predicted-class probability ≥0.90; AD misses are
 its AD-to-NC error subset. Each candidate changes one baseline setting.*
 
-Centering added only **22 correct predictions**, or 0.77 percentage points,
-with worse NLL. Stronger decay hurt both models. Overfitting was visible,
-but increasing this penalty alone did not improve held-out performance.
-The original [0,1] scale and decay 0.01 were retained.
+Centering gained only **0.77 percentage points** with worse NLL; stronger
+decay hurt both models. Increasing regularization alone had not resolved
+the TRAIN–TUNE gap. I retained the [0,1] scale and decay 0.01.
 
-Geometry gave the largest classification gain: **128 additional correct
-slices, or 4.48 percentage points**. NLL and confident errors still rose.
-I kept the positional variation for subsequent GFNet experiments. C became
-the common comparison for two questions: whether a local stem improved
-classification, and whether soft targets reduced the confident errors.
+Geometry gave the largest classification gain: **4.48 percentage points**,
+while NLL and confident errors worsened. I retained it for the accuracy gain
+and used C as the next control. A local stem tested whether better features
+could extend that gain; soft targets separately tested whether the confident
+errors could be reduced.
 
 ### Local Features Improved Accuracy; Soft Targets Improved NLL
 
@@ -434,14 +492,13 @@ twelve Fourier blocks can stay unchanged. Convolutional stems have also
 improved ViT optimization
 ([Xiao et al., 2021](https://arxiv.org/abs/2106.14881)).
 
-C's **734 high-confidence errors** motivated a separate label-smoothing
+C's frequent confident mistakes motivated a separate label-smoothing
 experiment. Hard targets keep rewarding increasingly certain predictions
 on TRAIN; soft targets reduce that pressure
 ([Müller et al., 2019](https://arxiv.org/abs/1906.02629)). The mild coefficient
 **0.05** mixes 95% hard label with 5% uniform probability, giving binary
-targets **0.975/0.025**. The labelled class retains most of the supervision,
-without demanding probability one. This experiment kept patch embedding,
-so the effect of soft targets could be distinguished from the stem change.
+targets **0.975/0.025**. Keeping patch embedding separated this target change
+from the stem experiment.
 
 ![GFNet input processing and local-feature comparisons](figures/gfnet_input_stem_comparison.png)
 
@@ -449,25 +506,25 @@ so the effect of soft targets could be distinguished from the stem change.
 D/E compare with C, which already includes mild geometry. Values come from
 the saved TUNE histories.*
 
-The stem (**D**) raised accuracy from **69.62% to 74.86%**: 2,141 correct
-slices versus 1,991, a gain of 150. NLL fell from 2.3910 to 1.8350, supporting
+The stem (**D**) raised accuracy from **69.62% to 74.86%**.
+NLL fell from 2.3910 to 1.8350, supporting
 local feature extraction before global mixing. The error changes were uneven:
-high-confidence errors fell from 734 to 654, but high-confidence AD misses
-rose from **414 to 460**.
+high-confidence errors declined, but high-confidence AD misses
+increased by about **11%**.
 
 The smoothed patch model (**E**) remained near the control's accuracy at
-**69.34%** (1,983 correct), while NLL fell to **0.8991**. It improved the
+**69.34%**, while NLL fell to **0.8991**. It improved the
 probability loss without improving classification.
 
-Meanwhile, the unchanged CNN scored **84.41%, 81.15% and 82.80%** at the
-selected TUNE epochs of seeds 3710–3712. I retained this baseline and
+Meanwhile, the unchanged CNN reached **81.15–84.41% TUNE accuracy** across
+the three seeds. I retained this baseline and
 concentrated the remaining architecture experiments on GFNet.
 
 ### Six Blocks Reduced Confident AD Misses
 
 The stem model still reached **99.91% online TRAIN accuracy**. TUNE epoch
-11 already had 2,131 correct predictions; selected epoch 19 added only ten,
-while high-confidence AD misses rose from **327 to 460**. Further fitting
+19 improved accuracy by only **0.35 percentage points** over epoch 11,
+while high-confidence AD misses increased by about **41%**. Further fitting
 was producing little classification gain and more confident AD mistakes.
 
 The stem had improved classification, but the later trajectory suggested
@@ -476,15 +533,12 @@ details. I retained the stem and tested **six blocks against twelve**.
 Halving the stack makes a substantial capacity change while keeping the
 256-channel representation and 15 × 16 grid fixed. Each remaining filter
 still mixes the whole grid, so reducing depth preserves the spatial reach
-of individual blocks. Parameters fell from **7,599,330 to 4,025,058**, with
+of individual blocks. Parameters fell from **7.60 million to 4.03 million**, with
 maximum DropPath unchanged at 0.1. E had improved NLL in the patch model,
 so smoothing was also tested with the stronger stem representation.
-D/F/G/H crossed both depths with smoothing 0 and 0.05: D versus G compares
-depth, D versus F compares smoothing at twelve blocks, and G versus H repeats
-that smoothing comparison at six. A lower rate was tested on F as well:
-its stem and soft targets
-had changed the optimization conditions since the earlier patch-model LR
-comparison.
+D/F/G/H crossed both depths with smoothing 0 and 0.05 to separate their
+effects. F also received a lower-LR comparison because the stem and soft
+targets had changed optimization since the patch-model experiment.
 
 | Fit | Blocks / smoothing / LR | TUNE accuracy | NLL | High-confidence AD misses |
 | --- | --- | ---: | ---: | ---: |
@@ -494,30 +548,28 @@ comparison.
 | H | 6 / 0.05 / 3e-4 | 73.50% | 0.8652 | 509 |
 | I | 12 / 0.05 / 1e-4 | 74.20% | 0.7742 | 341 |
 
-*All use the stem, geometry and seed 3710. Saved TUNE metrics are taken from
-the selected epochs D/F/G/H/I = 19/17/7/21/13 over the same 2,860 images.
-Parameter totals are counts of the trainable weights in each architecture.*
+*All use the stem, geometry and seed 3710. Metrics come from the selected
+TUNE checkpoints on the same images.*
 
 ![Depth and label smoothing: TUNE accuracy and confident AD misses](figures/gfnet_depth_smoothing.png)
 
 Six blocks without smoothing (**G**) gave the group's highest accuracy,
-adding **27 correct slices** over D and removing **161 high-confidence AD
-misses**. AD recall rose from **62.73% to 66.82%**. Both classification and
-this error measure favoured the smaller model, which became the next
-flat-GFNet reference.
+with **35% fewer high-confidence AD misses** than D.
+AD recall rose from **62.73% to 66.82%**, favouring G as the next reference.
 
 Smoothing helped twelve-block accuracy slightly, but cost the six-block model
-**66 correct predictions** and increased confident AD misses from **299 to
-509**. Two plausible improvements had not combined successfully. F also had
-lower NLL than G but more confident AD misses; its better average probability
-loss did not reflect a lower AD-error burden. Reducing F's learning rate
-produced I, losing **35 correct predictions** for another small NLL gain.
-The six-block, unsmoothed, 3e-4 recipe was retained.
+**2.31 percentage points** and increased confident AD misses by about **70%**.
+Its effect depended on depth. F's lower NLL than G also came with more
+confident AD misses: reducing average probability loss had not improved
+this error burden. Lowering F's learning rate to produce I lost another
+**1.22 percentage points in accuracy**, with only a small NLL gain.
+The six-block, unsmoothed, 3e-4 recipe offered the better balance of accuracy
+and confident AD misses.
 
 The smaller model still overfit. From selected epoch seven to final epoch
 twenty, its online TRAIN accuracy rose from **94.02% to 99.45%**, while TUNE
 accuracy fell from **75.80% to 70.63%**. NLL increased from **0.9047 to
-2.5903**, and high-confidence AD misses from **299 to 569**. Reducing depth
+2.5903**, and high-confidence AD misses increased by about **90%**. Reducing depth
 improved the selected model, but further fitting still widened the gap
 between TRAIN and other patients' images.
 
@@ -536,8 +588,7 @@ require another reduction of the odd height 15. Early widths of **64 and
 128** limit the feature-memory cost of larger grids; the final **256** channels
 retain the previous classifier width. LayerScale starts at **0.001**, following
 the reference Pyramid constructor, to keep the initial residual contributions
-small. Maximum DropPath remains 0.1. Four candidates combine two final-stage
-depths with two learning rates, using the same three-stage structure.
+small. Maximum DropPath remains 0.1.
 
 | Stage | Grid | Channels | Compact / extended blocks |
 | --- | --- | ---: | --- |
@@ -562,17 +613,15 @@ learning rate within this architecture.
 | P3 | 2/2/4 / 3e-4 | 74.02% | 2.2614 | 642 / 443 |
 | P4 | 2/2/4 / 1e-4 | 73.46% | 1.2533 | 493 / 425 |
 
-*Saved selected-epoch TUNE results, seed 3710, 2,860 slices. P1–P4 select
-epochs 14/2/14/12, with 2,088/2,085/2,117/2,101 correct predictions.*
+*Selected-checkpoint TUNE results for the four Pyramid candidates, seed 3710.*
 
 ![Pyramid and flat GFNet development results](figures/gfnet_pyramid_results.png)
 
 The best hierarchy reached **74.02%**, below flat G's **75.80%**. Additional
-coarse blocks improved accuracy slightly but did not close the gap. P2's zero
-high-confidence errors looked promising until the denominator was examined:
-only **31 predictions**, or **1.08% of TUNE**, reached confidence 0.90. It
-rarely made a high-confidence decision. The later rejection analysis includes
-coverage to show how many predictions remain when errors are reduced.
+coarse blocks improved accuracy slightly but did not close the gap. P2 had
+zero high-confidence errors, but only **1.08% of TUNE predictions** reached
+confidence 0.90. Its lower NLL and cautious scores came with lower accuracy;
+the zero-error group covered too little of the task to justify replacing G.
 
 The hierarchy also kept fitting TRAIN while TUNE deteriorated. Final online
 TRAIN accuracies ranged from **96.64% to 99.84%**, against **66.64–71.78%** on
@@ -597,9 +646,8 @@ CutMix at the same time. Images and target labels use the same mixing weight;
 TUNE remains ordinary, unmixed slices.
 
 GFNet was compared with and without MixUp at seeds 3710 and 3711, keeping
-the initialization seed matched within each pair. CNN seed **3711** was
-tested first because it had the
-lowest baseline TUNE accuracy, **81.15%**, and **344 confident errors**.
+the initialization seed matched within each pair. CNN seed **3711** was tested first because its baseline TUNE accuracy was
+lowest at **81.15%**, alongside persistent confident errors.
 
 | Model / seed | MixUp alpha | TUNE accuracy | NLL | High-confidence errors / AD misses |
 | --- | --- | ---: | ---: | ---: |
@@ -613,10 +661,12 @@ lowest baseline TUNE accuracy, **81.15%**, and **344 confident errors**.
 *Each row uses the saved selected TUNE epoch on all 2,860 slices. GFNet retains
 the six-block stem model and geometry; CNN retains its unaugmented baseline.*
 
-GFNet lost accuracy at seed 3710. Seed 3711 gained **21 correct slices**, but
+GFNet lost accuracy at seed 3710. Seed 3711 gained **0.73 percentage points**, but
 AD recall fell from **62.58% to 58.56%**, despite improved NLL and fewer
-confident errors. Its smaller error counts did not mean better AD recognition.
-The two seeds gave little reason to adopt MixUp for GFNet.
+confident errors. More AD images were classified as NC even as fewer mistakes
+crossed the 0.90 confidence threshold. Softer errors improved that diagnostic
+while more AD slices were missed. With accuracy moving in opposite directions
+across the two seeds, MixUp was left out of GFNet.
 
 CNN 3711 improved in accuracy, NLL and confident errors. The remaining seeds
 were needed to see whether the gain extended beyond this initially weaker
@@ -626,8 +676,8 @@ the existing 3711 result.
 ### The Last Capacity Test Targeted the Channel MLP
 
 After the Pyramid and GFNet MixUp comparisons, G remained the strongest
-accuracy reference. **3,153,408 of its 4,025,058 parameters—about 78%—were in
-its six MLPs**. This count comes from the two linear layers and their biases
+accuracy reference. About **78% of its parameters were in the six MLPs**,
+counting the two linear layers and their biases
 in each block. The earlier depth reduction had helped; shrinking this large
 channel branch offered another capacity test while preserving every Fourier
 filter and the local stem.
@@ -636,15 +686,16 @@ filter and the local stem.
 exposes the MLP expansion ratio. I compared the existing **ratio 4**
 (256 → 1,024 → 256) with **ratio 2** (256 → 512 → 256), halving hidden width
 while leaving token width and all six global filters intact. Total parameters
-fell to **2,449,122**. This reduced the largest parameter component while
-preserving the local features and all six global-filter layers.
+fell to **2,449,122**.
 
 The final round had two questions left: whether CNN's MixUp gain persisted
 across seeds, and whether a smaller GFNet MLP improved on G. Six new fits
 completed the comparisons: two CNN MixUp seeds, one missing ratio-4 GFNet
 control, and three ratio-2 GFNet seeds. Existing controls were reused.
-Each complete recipe uses seeds 3710–3712. Mean TUNE accuracy determines
-the final choice, with mean NLL breaking an exact tie.
+Each candidate recipe is compared across seeds **3710–3712**, keeping the
+configuration fixed so differences reflect initialization and training order.
+Mean TUNE accuracy determines the final recipe, with mean NLL breaking an
+exact tie.
 
 | Recipe | Seed 3710 | Seed 3711 | Seed 3712 | Mean accuracy | Mean NLL |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -659,21 +710,20 @@ Means average the three seed metrics. Each line in the figure joins a matching s
 ![Three-seed recipe comparisons](figures/development_seed_comparison.png)
 
 CNN MixUp improved NLL at all three seeds, but its accuracy gain at 3711 was
-offset by losses at 3710 and 3712. Across the three evaluations it classified
-**21 fewer slices correctly**, with mean accuracy falling from **82.79% to
-82.54%**. The unmixed CNN was retained for its higher mean accuracy.
-MixUp's substantially better probability loss remains part of the final
-comparison of accuracy and confidence.
+offset by losses at 3710 and 3712. Mean accuracy fell from **82.79% to
+82.54%**, so the accuracy-first rule retained the unmixed CNN. MixUp was the
+stronger probability-learning candidate; this small accuracy trade-off remains
+relevant when choosing a confidence-aware model.
 
 For GFNet, ratio 2 reduced parameters but gave lower mean accuracy and higher
 mean NLL. The gain from reducing depth had not extended to reducing MLP width.
 Ratio 4 was retained, although its **75.24% mean TUNE accuracy** still fell
 short of 80%.
 
-The models taken forward were the unmixed CNN and the six-block convolutional
-GFNet with ratio 4 and mild geometry. Their selected epochs for seeds
-3710–3712 were **14/18/16 for CNN and 7/13/19 for GFNet**. These fixed models
-supplied the subsequent calibration and TEST evaluation.
+The selected recipes were the unmixed CNN and the six-block convolutional
+GFNet with ratio 4 and mild geometry. Final evaluation asked whether GFNet's
+global features offered a confidence or efficiency advantage despite its
+lower TUNE accuracy.
 
 ## Evaluating Confidence and Selective Prediction
 
@@ -686,11 +736,11 @@ method follows [Guo et al. (2017)](https://proceedings.mlr.press/v70/guo17a.html
 keeping the same classification boundary while changing the probability scale.
 
 Each model/seed has its own temperature, fitted on the **3,180 CALIBRATION
-slices**. TUNE had already guided model selection; a separate population lets
-probability adjustment follow that choice without fitting again to the same
-development images.
+slices**. Separate patients keep this probability adjustment apart from
+TUNE's model-selection role.
 
-For an AD-minus-NC logit difference $m$, calibrated predicted-class confidence is
+For the logit difference $m=z_{\mathrm{AD}}-z_{\mathrm{NC}}$,
+calibrated predicted-class confidence is
 
 $$
 \operatorname{confidence}=\sigma\!\left(\frac{|m|}{T}\right),\qquad T>0.
@@ -711,7 +761,7 @@ to individual errors. I use several views to examine both behaviours:
 | --- | --- |
 | Reliability diagram and ECE | Does confidence agree with observed correctness? |
 | NLL and Brier score | How good are the assigned probabilities, including confident mistakes? |
-| Confidence on correct versus wrong predictions; confidence–correctness correlation | Does the model become less certain when it is wrong? |
+| Confidence on correct versus wrong predictions | Does the model become less certain when it is wrong? |
 | Error-detection AUROC | Does low confidence rank errors ahead of correct predictions? |
 | High-confidence errors and AD misses | Which mistakes remain above confidence 0.90? |
 
@@ -719,8 +769,8 @@ Reliability diagrams use **ten equal-width bins over [0.5, 1]**, the range of
 predicted-class confidence in binary classification. Ten bins give a readable
 summary; ECE weights each bin's confidence–accuracy gap by the number of images
 it contains. NLL strongly penalizes a very low probability for the true class;
-Brier records average squared probability error. Together they show more than
-a single binned calibration score.
+Brier averages the squared error of the AD probability, $(p_{\mathrm{AD}}-y)^2$.
+These scores complement the binned calibration summary.
 
 The **0.90** threshold follows the high-confidence diagnostics used throughout
 development. Its prediction count, error rate and AD misses are reported together,
@@ -729,15 +779,14 @@ Full-population accuracy, class recall, macro-F1 and AD AUROC describe classific
 
 ### Retain Most Predictions and Examine the Remaining Errors
 
-P2's zero confident errors came from only 31 high-confidence predictions.
+P2's zero confident errors came from just 1.08% of TUNE predictions.
 That result made the amount of retained output as important as the error count.
 [Selective classification](https://arxiv.org/abs/1705.08500) studies this trade-off
 between coverage and risk.
 
 I chose **80% CALIBRATION coverage** as a working point: retain most predictions
-and leave roughly the least-confident fifth for review. Among the 3,180
-CALIBRATION slices, this requires at least **2,544 retained predictions**.
-The highest confidence threshold meeting that count is selected; tied scores
+and leave roughly the least-confident fifth for review.
+The highest confidence threshold meeting that proportion is selected; tied scores
 stay together. This 80% is a retention choice, separate from the classification
 accuracy target.
 
@@ -746,11 +795,10 @@ reports the retained fraction, and selective risk is the error rate within
 that retained group. The observed TEST coverage can differ because its scores
 have a different distribution.
 
-Two comparisons are useful. The fixed threshold shows how the chosen policy
-transfers to TEST; the **risk–coverage curve** compares models at the same
-retained fraction. Positive temperature scaling preserves confidence ordering,
-so it leaves this ranking curve unchanged. Calibration adjusts what the
-probabilities mean; the curve shows how well the model orders its mistakes.
+The fixed threshold shows how the policy transfers to TEST; the
+**risk–coverage curve** compares models at the same retained fraction.
+Positive temperature scaling preserves score ordering, leaving this curve
+unchanged. It adjusts the probabilities, not which predictions rank first.
 
 ### Compare Models on the Same Patients
 
@@ -787,253 +835,199 @@ loop. This distinguishes computational savings from differences in input I/O.
 
 ## Results
 
-### Record final full-coverage TEST slice classification
+### Confidence Reliability
 
-Job **699939 completed with exit 0:0**, zero restarts and elapsed time
-**1 minute 59 seconds**. Accounting and saved outputs were inspected at
-**26 October 2026, 21:56:28 Brisbane**. All six fixed model/seed calls and
-the saved-record analysis exited 0. Each call recorded an A100-PCIE-40GB on
-a100-1, partition comp3710, with two intra-op/two inter-op threads. Completed
-inference totals are 19,080 CALIBRATION and 35,520 TEST presentations;
-these are not independently measured image-decode counts. No neural weights
-were updated during evaluation.
+#### Both Models Were Confident When Wrong
 
-Every selected model classifies the same **5,920 TEST slices from 136
-patients**, comprising **3,220 NC and 2,700 AD slices**. Accuracy is the
-number of correct slice predictions divided by 5,920, including every final
-partial batch and every low-confidence prediction. NC is class 0 and AD is
-class 1; the AD-minus-NC logit margin decides the class, with an exact zero
-assigned to AD. There is no scan or patient voting, probability aggregation,
-seed ensemble or rejection in this accuracy denominator. Positive temperature
-scaling preserves these class decisions and confusion counts.
+All six selected models predict the same **5,920 TEST slices from 136
+patients**. Correct predictions usually receive higher confidence, but the
+wrong predictions are far from hesitant. CNN's errors average **86.16–89.94%
+raw confidence** across seeds. GFNet's two most confident seeds exceed **93%**
+even when wrong, close to their confidence on correct predictions.
 
-| Model | Seed | Selected epoch | Correct / TEST slices | Accuracy | Macro-F1 | AD AUROC |
-| --- | --- | --- | --- | --- | --- | --- |
-| CNN | 3710 | 14 | 4,900 / 5,920 | 82.77% | 0.8259 | 0.8952 |
-| CNN | 3711 | 18 | 4,776 / 5,920 | 80.68% | 0.8057 | 0.8857 |
-| CNN | 3712 | 16 | 4,852 / 5,920 | 81.96% | 0.8184 | 0.8856 |
-| GFNet | 3710 | 7 | 4,242 / 5,920 | 71.66% | 0.7136 | 0.7965 |
-| GFNet | 3711 | 13 | 4,215 / 5,920 | 71.20% | 0.7076 | 0.7908 |
-| GFNet | 3712 | 19 | 4,269 / 5,920 | 72.11% | 0.7155 | 0.7967 |
+![Confidence distributions for correct and wrong TEST predictions](figures/final_confidence_distributions.png)
 
-The arithmetic means across the three fitted seeds are **81.80% accuracy,
-0.8167 macro-F1 and 0.8888 AUROC for CNN**, versus **71.66%, 0.7122 and
-0.7947 for GFNet**. These means summarize separate fits evaluated on the
-same population, rather than combining their predictions or treating them
-as three independent patient cohorts. At this denominator, exactly 80%
-requires 4,736 correct slices. All three CNN fits exceed that count; none
-of the GFNet fits reaches it. Completion of the evaluation does not resolve
-GFNet's unmet accuracy goal.
+*Each curve shows the cumulative proportion of correct or wrong predictions
+at or below a confidence value, normalized within that group. Curves farther
+right indicate higher confidence. Colour separates correct and wrong predictions;
+line style identifies the training seed. The dashed vertical line marks 0.90.*
 
-Per-class metrics expose whether an overall result hides a weak diagnosis.
-Precision divides correct predictions of a class by all predictions of that
-class; recall divides them by its true support; F1 is their harmonic mean.
-Macro-F1 averages the NC and AD F1 values equally. AUROC uses the continuous
-AD logit margin, with average ranks for ties, rather than thresholded labels.
+| Model | Seed | Raw mean confidence: correct | Raw mean confidence: wrong | Error-detection AUROC |
+| --- | --- | ---: | ---: | ---: |
+| CNN | 3710 | 95.32% | 86.16% | 0.738 |
+| CNN | 3711 | 97.12% | 89.80% | 0.756 |
+| CNN | 3712 | 96.92% | 89.94% | 0.728 |
+| GFNet | 3710 | 93.27% | 86.16% | 0.697 |
+| GFNet | 3711 | 97.19% | 93.21% | 0.691 |
+| GFNet | 3712 | 97.75% | 94.71% | 0.691 |
 
-| Model | Seed | NC precision | NC recall | NC F1 | AD precision | AD recall | AD F1 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| CNN | 3710 | 83.29% | 85.47% | 84.37% | 82.11% | 79.56% | 80.81% |
-| CNN | 3711 | 82.99% | 81.09% | 82.03% | 78.05% | 80.19% | 79.10% |
-| CNN | 3712 | 83.92% | 82.67% | 83.29% | 79.69% | 81.11% | 80.40% |
-| GFNet | 3710 | 73.38% | 75.16% | 74.26% | 69.49% | 67.48% | 68.47% |
-| GFNet | 3711 | 72.09% | 76.77% | 74.36% | 69.97% | 64.56% | 67.15% |
-| GFNet | 3712 | 72.23% | 79.16% | 75.54% | 71.94% | 63.70% | 67.57% |
+Overfitting may have contributed to this excessive confidence. Cross-entropy
+rewards larger true-class margins even on correctly classified TRAIN images,
+which can encourage stronger scores after generalization has stopped improving.
+The development histories showed TRAIN accuracy approaching 100% while TUNE
+performance deteriorated. Correlated TRAIN slices may have made patient-specific patterns easier to
+learn, contributing to confident mistakes on other patients.
 
-![Full-coverage TEST slice confusion matrices for the six selected fits](figures/final_confusion.png)
+CNN separates errors from correct predictions better in each matched seed:
+its error-detection AUROC is **0.728–0.756**, compared with **0.691–0.697**
+for GFNet. Both are above random ordering at 0.5, but the overlapping
+confidence distributions explain why a confident answer can still be wrong.
 
-Rows are true labels and columns are predicted labels, ordered NC then AD.
-The lower-left cells are AD false negatives: CNN misses 552/535/510 slices
-across the three seeds, while GFNet misses 878/957/980. In every GFNet fit,
-AD recall is below NC recall. Its difficulty therefore includes substantial
-AD under-detection, rather than only a small loss near the 80% threshold.
-These errors also motivate examining confidence on wrong predictions;
-accuracy and class recall cannot establish whether the model recognizes
-its unreliable decisions.
+Comparing both models on the same boundary images helps explain what this
+uncertainty represents. For each seed, I select slices where one model's
+raw confidence lies in **[0.50, 0.55)**, then compare both models on those
+images. The table averages the group accuracies across seeds.
 
-The complete twelve prediction/calibration files, analysis and original
-confusion figure are archived outside Git. Published output hashes and the
-full manifest joins agree; confusion counts, class metrics and AUROC were
-checked directly from saved predictions without another inference or
-bootstrap run. The previously disclosed cohort exposure, repeated TUNE
-development and within-patient slice correlation still limit generalization
-claims. Three CNN point estimates above 80% do not guarantee that accuracy
-on a new patient population.
+| Boundary images selected by | CNN accuracy | GFNet accuracy |
+| --- | ---: | ---: |
+| GFNet | 77.3% | 43.9% |
+| CNN | 49.7% | 52.1% |
 
-### Evaluate whether slice confidence reflects correctness
+CNN classifies many of GFNet's uncertain images correctly, suggesting that
+useful class cues are present but may be poorly represented by GFNet.
+CNN's boundary images are difficult for both architectures. A slice inherits
+the patient's diagnosis while showing only one view of the brain; some views
+may contain weak evidence for that label. Low confidence may thus reflect
+either a model's representation or limited class information in the slice.
 
-The core investigation asks whether the model knows when its prediction is
-unreliable, including slices near its decision boundary. For two logits,
-the predicted-class confidence is `sigmoid(abs(z_AD - z_NC))`. Confidence
-is therefore a model score whose reliability must be measured against actual
-correctness, rather than assumed from its numerical size. Every result below
-uses the same full TEST population as the classification table.
+#### Calibration Improved Probability Quality
 
-NLL penalizes assigning little probability to the true diagnosis, especially
-when the prediction is confidently wrong. The binary Brier score is the mean
-of `(p_AD - label)^2`; this definition does not double the score by summing
-both class probabilities. Both scores depend on classification as well as
-probability quality. ECE measures the slice-weighted absolute difference
-between mean confidence and accuracy within ten fixed equal-width bins on
-[0.5, 1]. The last bin includes confidence 1. Lower values are better, but
-small ECE alone does not establish good error detection or high accuracy.
+The CALIBRATION-fitted temperatures are all above one, reducing the scale
+of the logits. GFNet's most overconfident seeds require the strongest
+adjustments. Applying these temperatures to TEST
+improves NLL, Brier and ECE in all six fits.
 
-Each temperature was fitted on its model's 3,180 CALIBRATION slices by NLL,
-then applied unchanged to TEST. All six optima are inside the predeclared
-0.05--20 bounds. Temperatures above one soften the excessive logit magnitude;
-neither TEST labels nor TEST ECE choose these temperatures. The table uses
-**raw → calibrated** values; ECE is displayed as a percentage-point gap.
+| Model | Seed | Temperature | NLL: raw → calibrated | Brier: raw → calibrated | ECE: raw → calibrated (pp) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| CNN | 3710 | 2.954 | 0.6745 → 0.4121 | 0.1423 → 0.1277 | 11.01 → 1.95 |
+| CNN | 3711 | 4.065 | 0.8547 → 0.4271 | 0.1655 → 0.1354 | 15.03 → 1.91 |
+| CNN | 3712 | 3.893 | 0.9360 → 0.4275 | 0.1565 → 0.1324 | 13.86 → 2.50 |
+| GFNet | 3710 | 3.793 | 0.9777 → 0.5454 | 0.2303 → 0.1847 | 19.60 → 2.65 |
+| GFNet | 3711 | 7.622 | 1.9236 → 0.5550 | 0.2599 → 0.1882 | 24.84 → 4.17 |
+| GFNet | 3712 | 10.652 | 2.3713 → 0.5461 | 0.2579 → 0.1841 | 24.79 → 2.22 |
 
-| Model | Seed | Temperature | NLL | Binary Brier | ECE |
-| --- | --- | --- | --- | --- | --- |
-| CNN | 3710 | 2.954 | 0.6745 → 0.4121 | 0.1423 → 0.1277 | 11.01% → 1.95% |
-| CNN | 3711 | 4.065 | 0.8547 → 0.4271 | 0.1655 → 0.1354 | 15.03% → 1.91% |
-| CNN | 3712 | 3.893 | 0.9360 → 0.4275 | 0.1565 → 0.1324 | 13.86% → 2.50% |
-| GFNet | 3710 | 3.793 | 0.9777 → 0.5454 | 0.2303 → 0.1847 | 19.60% → 2.65% |
-| GFNet | 3711 | 7.622 | 1.9236 → 0.5550 | 0.2599 → 0.1882 | 24.84% → 4.17% |
-| GFNet | 3712 | 10.652 | 2.3713 → 0.5461 | 0.2579 → 0.1841 | 24.79% → 2.22% |
+*Temperatures minimize NLL on the separate 3,180-slice CALIBRATION set.
+All scores in this table are measured on TEST; lower is better. ECE is
+expressed in percentage points (pp).*
 
 ![Raw and calibrated TEST slice reliability for all six selected fits](figures/final_reliability.png)
 
-Each point compares mean confidence with the observed correct fraction in
-one occupied bin. Points below the diagonal indicate overconfidence. Raw
-predictions lie well below it, particularly at high confidence; calibration
-brings the occupied bins closer to the diagonal. The seed-mean ECE decreases
-from **13.30 to 2.12 percentage points for CNN**, and from **23.08 to 3.01
-for GFNet**. Each plotted bin is a descriptive group, not an independent
-patient sample, and the point markers do not display uncertainty or bin size.
+*Each point compares a bin's mean confidence with its observed correct
+fraction. Points below the diagonal indicate overconfidence.*
 
-Confidence also needs to distinguish errors from correct predictions. The
-Pearson correlation below compares slice confidence with a binary correctness
-indicator. Error-detection AUROC treats an incorrect prediction as the positive
-case and uses negative absolute logit margin as its score; 0.5 represents
-random ordering. It is distinct from the AD-versus-NC classification AUROC.
+Raw predictions sit below the diagonal, especially at high confidence.
+Calibration brings them closer: mean ECE falls from **13.30 to 2.12 percentage
+points for CNN**, and from **23.08 to 3.01 for GFNet**. GFNet now describes
+its lower classification performance more faithfully; the probability scale
+has improved while its class decisions stay the same.
 
-| Model | Seed | Raw mean confidence, correct | Raw mean confidence, wrong | Correctness correlation, raw → calibrated | Error-detection AUROC, both |
-| --- | --- | --- | --- | --- | --- |
-| CNN | 3710 | 95.32% | 86.16% | 0.295 → 0.327 | 0.738 |
-| CNN | 3711 | 97.12% | 89.80% | 0.291 → 0.366 | 0.756 |
-| CNN | 3712 | 96.92% | 89.94% | 0.262 → 0.326 | 0.728 |
-| GFNet | 3710 | 93.27% | 86.16% | 0.241 → 0.307 | 0.697 |
-| GFNet | 3711 | 97.19% | 93.21% | 0.186 → 0.296 | 0.691 |
-| GFNet | 3712 | 97.75% | 94.71% | 0.157 → 0.293 | 0.691 |
+Softening extreme wrong predictions gives the true class more probability
+and can sharply reduce NLL. GFNet's raw NLL varies more than twofold across
+seeds, while calibrated NLL stays close to **0.55** and accuracy remains
+around **71–72%**. The runs differ substantially in score scale but share
+a classification weakness that temperature scaling cannot change.
 
-The positive correlations show useful but limited association with correctness.
-CNN's error-detection AUROC is descriptively higher in each matched seed.
-GFNet seeds 3711/3712 average over 93% raw confidence even when wrong,
-leaving little separation from their correct predictions. At the other end,
-the raw [0.50, 0.55) confidence bins contain only 53--173 slices per fit,
-with observed accuracy 43.08--57.78%. Low-confidence predictions are thus
-unreliable here, but these model-boundary slices have no clinical ambiguity
-annotations; this does not identify medically ambiguous patients.
+Paired comparisons after calibration average the three seeds and use
+**2,000 shared patient resamples** for the difference intervals.
 
-Positive temperature scaling preserves absolute-margin ordering and all class
-decisions. Consequently the error-detection AUROC is unchanged in every fit.
-The increase in Pearson correlation reflects the changed confidence scale,
-not a newly learned ability to rank errors. Calibration improves the meaning
-of probability values without repairing GFNet's accuracy or removing errors.
+| Calibrated metric | CNN mean | GFNet mean | GFNet − CNN [95% interval] |
+| --- | ---: | ---: | --- |
+| NLL | 0.4222 | 0.5489 | 0.1266 [0.0586, 0.1875] |
+| Brier | 0.1319 | 0.1857 | 0.0538 [0.0292, 0.0769] |
+| ECE (pp) | 2.12 | 3.01 | 0.89 [−1.37, 4.32] |
 
-To inspect the dangerous tail, define **high confidence as at least 0.90**
-for both raw and calibrated scores. Error rate divides errors by the number
-of high-confidence slices in the same column; a false negative is a true AD
-slice predicted NC. All entries again show raw → calibrated.
+CNN has lower calibrated NLL and Brier, with both difference intervals above
+zero. The ECE interval spans zero, so that smaller point estimate gives a
+less decisive comparison. ECE measures whether reported confidence matches
+observed accuracy. GFNet can become better calibrated around its lower
+accuracy while CNN still assigns more useful probabilities to the true labels,
+as reflected in NLL and Brier.
 
-| Model | Seed | High-confidence slices | Errors among them | False negatives among them | Error rate among them |
-| --- | --- | --- | --- | --- | --- |
-| CNN | 3710 | 4,753 → 2,474 | 564 → 160 | 318 → 108 | 11.87% → 6.47% |
-| CNN | 3711 | 5,137 → 1,761 | 772 → 94 | 385 → 44 | 15.03% → 5.34% |
-| CNN | 3712 | 5,126 → 2,559 | 733 → 194 | 361 → 125 | 14.30% → 7.58% |
-| GFNet | 3710 | 4,285 → 856 | 938 → 54 | 464 → 16 | 21.89% → 6.31% |
-| GFNet | 3711 | 5,173 → 803 | 1,340 → 53 | 756 → 14 | 25.90% → 6.60% |
-| GFNet | 3712 | 5,344 → 309 | 1,374 → 15 | 828 → 8 | 25.71% → 4.85% |
+#### Fewer Confident Errors Came with Fewer Confident Predictions
 
-Fewer predictions now qualify as highly confident; the underlying mistakes
-have not been corrected. For example, GFNet-3712 retains only 309/5,920
-slices (5.22%) above 0.90 after calibration, versus CNN-3712's 2,559/5,920
-(43.23%). Its smaller high-confidence error count cannot by itself establish
-better reliability at the same coverage. Even after calibration, every fit
-still makes high-confidence false negatives.
+Before calibration, predictions above confidence 0.90 have error rates of
+**11.87–15.03% for CNN and 21.89–25.90% for GFNet**. Even the models' most
+confident answers frequently include mistakes.
 
-The existing 2,000 paired, diagnosis-stratified patient-bootstrap draws
-(seed 9001) quantify uncertainty while retaining all slices and sampled
-patient multiplicities. The table reports the arithmetic seed mean and
-95% percentile interval, followed by the paired GFNet-minus-CNN difference.
-All six metrics have 2,000 valid replicates. ECE uses fractions here, so
-0.01 is a one-percentage-point gap; all listed metrics favor lower values.
+![High-confidence prediction counts, error rates and AD misses before and after calibration](figures/final_high_confidence_errors.png)
 
-| Metric | CNN mean [95% interval] | GFNet mean [95% interval] | GFNet − CNN [95% interval] |
-| --- | --- | --- | --- |
-| Raw NLL | 0.8217 [0.5743, 1.1218] | 1.7576 [1.3285, 2.2113] | 0.9358 [0.5781, 1.3052] |
-| Calibrated NLL | 0.4222 [0.3451, 0.5113] | 0.5489 [0.4780, 0.6220] | 0.1266 [0.0586, 0.1875] |
-| Raw Brier | 0.1548 [0.1171, 0.1959] | 0.2494 [0.1972, 0.3030] | 0.0946 [0.0534, 0.1343] |
-| Calibrated Brier | 0.1319 [0.1041, 0.1622] | 0.1857 [0.1560, 0.2162] | 0.0538 [0.0292, 0.0769] |
-| Raw ECE | 0.1330 [0.0969, 0.1749] | 0.2308 [0.1792, 0.2846] | 0.0978 [0.0538, 0.1391] |
-| Calibrated ECE | 0.0212 [0.0203, 0.0483] | 0.0301 [0.0212, 0.0779] | 0.0089 [-0.0137, 0.0432] |
+*Left: predictions reaching confidence 0.90. Middle: the error rate within
+that group. Right: AD false negatives within the same group. Each row compares
+raw and calibrated scores for one fit on all 5,920 TEST slices.*
 
-The paired differences support lower NLL and Brier for CNN both before and
-after calibration on this cohort. The calibrated ECE difference includes
-zero, so its smaller CNN point estimate does not establish a clear ECE
-advantage. The intervals condition on the six selected models, their fixed
-calibration and this cohort; they omit refitting, model-selection and
-external-population uncertainty. They do not make the seeds independent
-cohorts, and no interval for the correlations or error-detection AUROCs is
-claimed here.
+After calibration, these error rates fall to **5.34–7.58% for CNN and
+4.85–6.60% for GFNet**, alongside a smaller high-confidence group.
+At seed 3712, only **5.22% of GFNet predictions** remain above 0.90,
+compared with **43.23% for CNN**. Their error rates
+are **4.85% and 7.58%**, respectively, at these very different retained
+fractions. The risk–coverage analysis below compares the models at the same
+retained fraction.
 
-The evidence therefore does not support the selected GFNet as a more reliable
-judge of its own errors than the CNN baseline. Both raw models are overconfident,
-and both benefit from separate probability calibration. Neither low ECE nor
-the presence of a confidence score establishes clinical trustworthiness.
-These findings reuse the saved evaluation and bootstrap outputs. Direct
-saved-record arithmetic checks agree for all six raw/calibrated metric sets
-and 120 reliability bins; no model, fitting or bootstrap run was repeated.
+A single temperature softens correct and wrong predictions together.
+An extreme wrong margin can remain above 0.90 after scaling, leaving
+confident AD misses in every fit.
 
-### Test whether rejecting uncertain slices reduces errors
+**CNN's confidence was a more useful guide to prediction errors than GFNet's.**
+It combined better error ranking with lower probability losses. Calibration
+improved both models' probability scales, while the confident misses above
+showed where an average calibration score fell short.
 
-Confidence is useful operationally only if abstaining on uncertain predictions
-reduces the error burden among those retained. **Coverage** is retained slices
-divided by all 5,920 TEST slices; **selective risk** is wrong predictions divided
-by retained slices. Reducing risk by retaining very few predictions has a cost,
-so both quantities must be shown. Rejected slices remain unresolved rather than
-being counted as correct or assigned NC. The full-coverage assessment accuracy
-reported above is unchanged.
+### Selective Prediction
 
-The deployed policy was fixed before TEST: each model/seed retains at least
-80% of its CALIBRATION slices by absolute temperature-scaled logit margin,
-including complete score ties. All six saved policies retain exactly 2,544
-of 3,180 CALIBRATION slices. Apply the same score threshold to TEST without
-retuning it to force 80% coverage. Confidence cutoffs below are readable
-equivalents; the saved absolute-margin thresholds determine membership.
-This policy is separate from the fixed 0.90 high-confidence audit above.
+#### Rejecting Uncertain Slices Reduced Errors
 
-| Model | Seed | Fixed calibrated confidence cutoff | TEST coverage | Retained errors / retained slices | Full → selective risk | Retained AD FNs / all AD slices |
-| --- | --- | --- | --- | --- | --- | --- |
-| CNN | 3710 | 0.6658 | 81.62% | 594 / 4,832 | 17.23% → 12.29% | 329 / 2,700 |
-| CNN | 3711 | 0.6643 | 82.69% | 687 / 4,895 | 19.32% → 14.03% | 342 / 2,700 |
-| CNN | 3712 | 0.7009 | 79.63% | 580 / 4,714 | 18.04% → 12.30% | 299 / 2,700 |
-| GFNet | 3710 | 0.6022 | 79.88% | 1,127 / 4,729 | 28.34% → 23.83% | 577 / 2,700 |
-| GFNet | 3711 | 0.5975 | 82.75% | 1,230 / 4,899 | 28.80% → 25.11% | 690 / 2,700 |
-| GFNet | 3712 | 0.5972 | 81.17% | 1,140 / 4,805 | 27.89% → 23.73% | 688 / 2,700 |
+CALIBRATION thresholds retained **80% of predictions** for every fit.
+Applied unchanged to TEST, they retained **79.63–82.75%**. The resulting
+error rates show how much confidence filtering helps.
 
-Mean CNN risk falls from **18.20% to 12.88%**, retaining **81.31%** of TEST
-slices. GFNet falls from **28.34% to 24.22%**, retaining **81.27%**. These
-are arithmetic seed means, not pooled or ensembled predictions. Rejection
-helps both recipes, but does not turn GFNet into an accurate retained classifier:
-its retained accuracy remains only 74.89--76.27%. CNN's retained accuracy is
-85.97--87.71%, alongside the cost of leaving about one fifth of slices unresolved.
+Calibration and rejection contribute in different ways here. With a fixed
+CALIBRATION coverage target, dividing all margins by a positive temperature
+also divides the selected margin threshold by that temperature. The same
+TEST images remain above the threshold. Calibration improves the reported
+probabilities; the reduction in errors comes from the model's existing ranking.
 
-![TEST slice risk--coverage curves with frozen CALIBRATION policy markers](figures/final_risk_coverage.png)
+| Model | Seed | Confidence cutoff | TEST coverage | Error rate: all → retained | Retained misses (% of all AD) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| CNN | 3710 | 0.6658 | 81.62% | 17.23% → 12.29% | 12.19% |
+| CNN | 3711 | 0.6643 | 82.69% | 19.32% → 14.03% | 12.67% |
+| CNN | 3712 | 0.7009 | 79.63% | 18.04% → 12.30% | 11.07% |
+| GFNet | 3710 | 0.6022 | 79.88% | 28.34% → 23.83% | 21.37% |
+| GFNet | 3711 | 0.5975 | 82.75% | 28.80% → 25.11% | 25.56% |
+| GFNet | 3712 | 0.5972 | 81.17% | 27.89% → 23.73% | 25.48% |
 
-The curves describe the ranking of saved TEST scores, admitting whole groups
-with equal absolute margin. Their thresholds are descriptive coordinates,
-not replacements for the frozen operating policies marked by dots. Positive
-temperature scaling preserves this ranking, so it does not improve the curve.
-To compare models independently of their achieved policy coverage, use the
-predeclared common coverage coordinates. The selected coordinates below are
-exactly 592, 2,960, 4,736 and 5,920 retained slices in every fit; no tie causes
-an overshoot here.
+*Each row evaluates the fixed CALIBRATION cutoff on all 5,920 TEST slices.
+The retained error rate is selective risk: errors divided by retained predictions.*
+
+Both policies retain about **81% of TEST predictions**. Mean risk falls from
+**18.20% to 12.88% for CNN**, and from **28.34% to 24.22% for GFNet**.
+Rejecting roughly 19% of the images removes about **40–46% of CNN's original
+errors** per seed, compared with **28–33% for GFNet**.
+
+![Correct and wrong predictions removed by the fixed rejection policies](figures/final_rejected_predictions.png)
+
+*Rejected errors equal all errors minus retained errors. The remaining part
+of each rejected group consists of predictions that were originally correct.*
+
+More than half the rejected predictions were originally correct in every fit;
+for CNN-3710, the proportion is about **61%**. Errors are still more concentrated
+in this group than in the full set, so rejection lowers retained risk while
+sending many correct answers for review.
+
+#### CNN Retained Fewer Errors at the Same Coverage
+
+The fixed policies retain slightly different proportions of TEST. At common
+**80% coverage**, mean risk is **12.54%
+for CNN and 23.95% for GFNet**. CNN has lower risk in every matched seed at
+the evaluated coverage levels from 20% to 100%.
+
+![Risk–coverage comparison with fixed policy points and common 80% coverage](figures/final_selective_risk.png)
+
+*Left: 20–100% coverage. Right: the highest-confidence 1–20%, with separate
+axis limits. Circles mark the fixed CALIBRATION policies; diamonds mark
+80% coverage. Curves use the saved score ordering and keep equal scores together.*
 
 | Model | Seed | Risk at 10% coverage | Risk at 50% | Risk at 80% | Risk at 100% | AURC |
-| --- | --- | --- | --- | --- | --- | --- |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
 | CNN | 3710 | 3.38% | 7.57% | 11.76% | 17.23% | 0.0874 |
 | CNN | 3711 | 3.89% | 7.67% | 13.45% | 19.32% | 0.0921 |
 | CNN | 3712 | 7.26% | 8.07% | 12.42% | 18.04% | 0.0951 |
@@ -1041,295 +1035,575 @@ an overshoot here.
 | GFNet | 3711 | 5.24% | 17.26% | 24.47% | 28.80% | 0.1664 |
 | GFNet | 3712 | 5.57% | 16.42% | 23.50% | 27.89% | 0.1596 |
 
-At common 80% coverage, the mean risk is **12.54% for CNN versus 23.95%
-for GFNet**. CNN is lower in every matched seed at each of the nine saved
-20--100% coordinates. It does not dominate at every possible coverage:
-GFNet-3712 has lower risk than CNN-3712 at 10%, and the curves cross near
-the low-coverage end. With very few retained slices, a single error produces
-a large risk change; the most extreme confidence is not a guarantee of correctness.
+CNN's lower retained risk reflects two advantages: fewer errors overall
+and better separation of errors from correct predictions by confidence.
+GFNet starts with more mistakes, and the greater overlap between its correct
+and wrong scores makes those mistakes harder to filter.
 
-AURC is the right-endpoint step sum of risk times the coverage increment
-over complete tied-score groups, including the first group from zero coverage.
-Lower is better; the means are **0.0916 for CNN and 0.1614 for GFNet**.
-The plotted steps use this same convention. AURC reflects both overall
-classification error and error ranking, so its difference cannot be attributed
-solely to uncertainty estimation. The common-coverage results and AURCs are
-descriptive; the saved bootstrap did not compute their confidence intervals.
+The curves cross in the highest-confidence tail: at 10% coverage,
+GFNet-3712 has **5.57% risk**, below CNN-3712's **7.26%**. A system accepting
+only a small fraction of predictions would need to consider this end of the
+curve separately from the working point near 80%.
 
-The existing paired patient-bootstrap intervals do cover the frozen-policy
-quantities below. Entries are seed means with 95% percentile intervals,
-reusing the same 2,000 diagnosis-stratified draws. Model columns use percentages;
-the GFNet-minus-CNN column uses percentage-point differences.
+The area under the risk–coverage curve, **AURC**, summarizes risk across
+coverage levels. Mean AURC is **0.0916 for CNN and 0.1614 for GFNet**,
+favouring CNN overall. It includes both the starting classification error
+and the ordering of errors. The calculation uses the right-endpoint step
+area over complete tied-score groups.
 
-| Frozen-policy quantity | CNN mean [95% interval] | GFNet mean [95% interval] | GFNet − CNN [95% interval] |
+#### Many AD Misses Survived Rejection
+
+Paired patient-bootstrap comparisons of the fixed policies give:
+
+| Fixed-policy measure | CNN mean | GFNet mean | GFNet − CNN [95% interval], pp |
+| --- | ---: | ---: | --- |
+| TEST coverage | 81.31% | 81.27% | −0.05 [−2.30, 2.24] |
+| Selective risk | 12.88% | 24.22% | 11.34 [6.45, 16.21] |
+| Retained misses (% of all AD) | 11.98% | 24.14% | 12.16 [5.05, 18.59] |
+
+At these similar coverages, GFNet's risk is **11.34 percentage points higher**,
+with a paired interval of **6.45–16.21**. The difference in retained AD-miss
+fractions also favours CNN.
+
+Overall coverage also hides a difference between diagnoses:
+
+| True-class measure | CNN | GFNet |
+| --- | ---: | ---: |
+| AD coverage | 80.5% | 78.4% |
+| NC coverage | 82.0% | 83.6% |
+| Error rate among retained AD slices | 14.9% | 30.8% |
+| Error rate among retained NC slices | 11.3% | 19.1% |
+
+*Values average the three seeds. Coverage uses all slices of the named true
+class; each error rate uses only the retained slices of that class.*
+
+GFNet rejects more AD than NC, yet nearly a third of its retained AD
+predictions are still wrong. Confidence filtering removes some uncertain
+AD decisions while leaving many strong NC decisions on true AD slices.
+Similar overall coverage conceals this larger AD-error burden.
+
+**Confidence-based rejection reduced errors, with a stronger benefit for CNN.**
+At similar coverage, CNN retained fewer wrong predictions and fewer AD misses.
+Confidently classifying AD as NC remained the main concern: these mistakes
+could pass the filter even when less certain correct predictions were rejected.
+
+### Full-Coverage Slice Classification
+
+#### CNN Exceeded 80% Across Three Seeds
+
+The six selected checkpoints give the following results on the complete
+TEST partition.
+
+| Model | Seed | Selected epoch | Accuracy | Macro-F1 | AD AUROC |
+| --- | --- | ---: | ---: | ---: | ---: |
+| CNN | 3710 | 14 | 82.77% | 0.8259 | 0.8952 |
+| CNN | 3711 | 18 | 80.68% | 0.8057 | 0.8857 |
+| CNN | 3712 | 16 | 81.96% | 0.8184 | 0.8856 |
+| GFNet | 3710 | 7 | 71.66% | 0.7136 | 0.7965 |
+| GFNet | 3711 | 13 | 71.20% | 0.7076 | 0.7908 |
+| GFNet | 3712 | 19 | 72.11% | 0.7155 | 0.7967 |
+
+Mean accuracy is **81.80% for CNN and 71.66% for GFNet**. CNN also has
+higher macro-F1 and AD AUROC. All three CNN seeds exceed 80%, although the
+weakest is close to the threshold at **80.68%**. GFNet's strongest result
+is **72.11%**, leaving a substantial gap.
+
+The paired patient-bootstrap accuracy difference, **GFNet minus CNN**, is
+**−10.15 percentage points**, with a **95% interval of [−14.41, −5.69]**.
+The comparison uses the same patients across all fits and supports a gap
+between the selected recipes beyond the choice of one training seed.
+
+#### GFNet Had the Larger Drop from TUNE to TEST
+
+![Selected-checkpoint accuracy on TUNE and TEST, and TEST recall by diagnosis](figures/final_classification_comparison.png)
+
+*Each line compares the same selected checkpoint on TUNE and TEST. The right
+panel separates AD and NC recall. Dashed grey lines mark 80%.*
+
+Every selected fit scores lower on TEST than on TUNE. CNN's mean falls from
+**82.79% to 81.80%**, about one percentage point; GFNet falls from **75.24%
+to 71.66%**, about 3.6 points. The larger GFNet drop may reflect greater
+sensitivity to which patients and image-preparation patterns are present.
+Repeated selection on the same 68 TUNE patients may also have favoured
+configurations that worked particularly well for that group.
+
+GFNet's TEST accuracies cluster around **71–72%**, suggesting a weakness
+shared by the recipe rather than one poor initialization. The stem and depth
+changes improved TUNE performance but left a substantial generalization gap.
+
+#### GFNet Missed More AD Slices
+
+Macro-F1 weights the two class F1 scores equally; separate precision and
+recall expose which diagnosis bears the errors.
+
+| Model | Seed | NC precision | NC recall | NC F1 | AD precision | AD recall | AD F1 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| CNN | 3710 | 83.29% | 85.47% | 84.37% | 82.11% | 79.56% | 80.81% |
+| CNN | 3711 | 82.99% | 81.09% | 82.03% | 78.05% | 80.19% | 79.10% |
+| CNN | 3712 | 83.92% | 82.67% | 83.29% | 79.69% | 81.11% | 80.40% |
+| GFNet | 3710 | 73.38% | 75.16% | 74.26% | 69.49% | 67.48% | 68.47% |
+| GFNet | 3711 | 72.09% | 76.77% | 74.36% | 69.97% | 64.56% | 67.15% |
+| GFNet | 3712 | 72.23% | 79.16% | 75.54% | 71.94% | 63.70% | 67.57% |
+
+![TEST confusion matrices for the six selected fits](figures/final_confusion.png)
+
+*Rows are true labels and columns are predictions, ordered NC then AD.
+The lower-left cell counts AD slices classified as NC.*
+
+CNN recognizes about **80% of AD slices**, compared with **64–67% for GFNet**.
+GFNet recognizes NC more often, with recall around **75–79%**.
+
+GFNet-3712 illustrates why overall accuracy needs this class breakdown.
+It has the highest GFNet accuracy, **72.11%**, yet the lowest AD recall,
+**63.70%**. Its higher overall score comes from better NC recognition,
+while AD recall falls.
+
+**CNN met the 80% slice-accuracy target in all three seeds; GFNet remained
+below it in every fit.** GFNet's lower AD recall identifies a specific weakness
+behind that gap: it recognized NC more readily and missed more AD images.
+
+### Failure Cases and Preparation Sensitivity
+
+#### Confident Misses and Model Disagreements
+
+The five cases below cover confident AD misses, disagreement between models
+and an error near GFNet's decision boundary. Seed 3710 supplies the reference
+cases; the other seeds show whether each decision persists across training runs.
+
+![Five TEST failure cases with raw and calibrated predictions across all seeds](figures/final_failure_cases.png)
+
+*Cases are numbered from top to bottom. The table summarizes seed 3710 using
+calibrated predicted-class confidence and the fixed rejection policy.
+Paths retain the supplied folder names; evaluation membership follows the
+patient-disjoint split.*
+
+| Case | True label | CNN-3710 | GFNet-3710 |
 | --- | --- | --- | --- |
-| TEST coverage | 81.31 [78.35, 84.29] | 81.27 [78.66, 84.03] | -0.05 [-2.30, 2.24] |
-| Selective risk | 12.88 [8.92, 17.41] | 24.22 [18.09, 30.71] | 11.34 [6.45, 16.21] |
-| Retained FNs / all AD slices | 11.98 [7.13, 18.02] | 24.14 [16.41, 32.01] | 12.16 [5.05, 18.59] |
+| 1: persistent GFNet miss | AD | AD, 54.9%; rejected | NC, 94.4%; retained |
+| 2: shared AD miss | AD | NC, 98.6%; retained | NC, 83.5%; retained |
+| 3: stable model disagreement | NC | NC, 69.2%; retained | AD, 91.0%; retained |
+| 4: correct prediction rejected | AD | NC, 96.9%; retained | AD, 53.9%; rejected |
+| 5: GFNet boundary error | NC | NC, 88.2%; retained | AD, 50.0%; rejected |
 
-GFNet's higher frozen-policy risk is supported by a paired difference interval
-above zero, at similar but nonidentical achieved coverages. This interval is
-not an equal-coverage comparison; that is supplied separately by the descriptive
-curve coordinates. The retained-FN fraction uses all 2,700 AD slices as its
-denominator, not only retained AD slices, and is not a conventional recall
-after assigning a diagnosis to rejected cases.
+- **Case 1: the correct prediction is the uncertain one.** Every GFNet seed
+  predicts NC and retains the error. CNN-3710 recognizes AD, but its low
+  confidence leads to rejection; the other CNN seeds also predict NC. Weak
+  or conflicting features in this view may make the CNN decision sensitive
+  to training initialization, while the shared GFNet recipe consistently
+  favours the wrong class.
+- **Case 2: both architectures confidently miss AD.** Every model and seed
+  predicts NC, and every fixed policy retains the prediction. CNN-3710 is
+  still **98.6% confident after calibration**. Limited AD-specific information
+  in this view, or misleading features learned from the common training
+  population, may have pushed both architectures towards the same wrong answer.
+- **Case 3: the architecture disagreement survives seed changes.** Every CNN
+  correctly predicts NC; every GFNet predicts AD, and all predictions are
+  retained. This persistent split may reflect different weighting of local
+  texture and wider spatial patterns by the two model recipes.
+- **Case 4: rejection keeps an error and discards a correct answer.** All CNN
+  seeds miss AD. GFNet-3710 and 3711 recognize it with about **54% confidence**
+  and are rejected; GFNet-3712 predicts NC with about **75% confidence** and
+  is retained. The fitted boundaries vary across seeds, and the largest margins
+  favour NC. Confidence filtering then keeps a wrong answer over a correct,
+  uncertain alternative.
+- **Case 5: uncertainty catches a boundary error.** GFNet-3710 predicts AD
+  at approximately **50% confidence**, while the other fits correctly predict
+  NC. The fixed policy rejects the error: here a seed-sensitive decision
+  produces the low-confidence warning the filter needs.
 
-The policy still retains **299--342 AD false negatives per CNN seed and
-577--690 per GFNet seed**. The separate 0.90 audit also retains calibrated
-high-confidence false negatives in every fit. A useful reduction in average
-risk therefore does not demonstrate safe automatic acceptance, a validated
-review workflow, or removal of the most consequential errors. The results
-support CNN as the stronger selective predictor for these recipes and this
-cohort, while preserving the shared cohort and fixed-fit uncertainty limits.
+The panels also differ in visible tissue extent, framing and black background.
+These differences may change the patterns available to the models, motivating
+the position and preparation-window comparisons below.
 
-All policy counts, saved tied-score curve groups, sixty common coordinates
-and AURC sums agree with direct saved-record arithmetic. The original figure
-and bootstrap summaries are reused; no inference, calibration fitting,
-bootstrap rerun or TEST threshold optimization was performed for this report.
+#### Performance Varied with Slice Position
 
-### Investigate real slice errors and preparation sensitivity
+Each prepared acquisition is divided into four consecutive groups of five
+slices. The groups contain the same TEST patients and class proportions,
+with each covering 25% of the images. The table averages the three seeds;
+retained risk uses the original CALIBRATION policies.
 
-Summary metrics cannot explain which mistakes survive calibration and rejection.
-The five error slots were specified before final evaluation: GFNet confident
-false negative, CNN confident false negative, GFNet-only error, CNN-only error,
-and a GFNet error nearest its decision boundary. Seed 3710 supplies the paired
-reference predictions; the other seeds provide context rather than an ensemble.
-Select slots sequentially, exclude patients already used, and break exact score
-ties by image path. All five slots found eligible cases without fallback.
-These deliberately selected errors illustrate failure mechanisms; their frequency
-cannot estimate population error rates.
+| Slice positions, zero-based | CNN accuracy | GFNet accuracy | CNN retained risk | GFNet retained risk |
+| --- | ---: | ---: | ---: | ---: |
+| 0–4 | 83.20% | 72.59% | 11.91% | 22.94% |
+| 5–9 | 82.43% | 72.50% | 12.17% | 22.82% |
+| 10–14 | 79.91% | 69.95% | 14.23% | 26.14% |
+| 15–19 | 81.67% | 71.58% | 13.24% | 24.94% |
 
-![Five predeclared TEST error cases with all six separate model predictions](figures/final_failure_cases.png)
+![Accuracy and retained error by position within each prepared acquisition](figures/final_slice_position.png)
 
-The panels show the saved native grayscale slices with their manifest labels,
-paths and six model predictions. The compact table refers to seed 3710 and
-reports **predicted class; raw → calibrated confidence**. Confidence is in the
-predicted class, including when that class is wrong. Values rounded to 100.00%
-are not evidence of certainty; the complete margins remain in saved records.
+*Thin lines show individual seeds and thick lines their means. The shaded
+region marks positions 10–14; positions follow the supplied twenty-slice sequence.*
 
-| Case | True label | CNN-3710 prediction and confidence | GFNet-3710 prediction and confidence |
-| --- | --- | --- | --- |
-| 1: GFNet confident FN | AD | AD; 64.00% → 54.85% | NC; 100.00% → 94.38% |
-| 2: CNN confident FN | AD | NC; 100.00% → 98.55% | NC; 99.79% → 83.51% |
-| 3: GFNet-only error | NC | NC; 91.66% → 69.24% | AD; 99.98% → 91.02% |
-| 4: CNN-only error | AD | NC; 100.00% → 96.93% | AD; 64.25% → 53.86% |
-| 5: GFNet wrong near boundary | NC | NC; 99.74% → 88.18% | AD; 50.01% → 50.00% |
+Both models perform worst at **positions 10–14**, where retained error is
+also highest. Patient and class composition are unchanged across groups,
+pointing towards differences in visible content. Weaker AD-related cues or
+changes in framing may help explain why both architectures struggle at
+these positions.
 
-1. **A confident GFNet miss persists across seeds.** Case 1 is slice
-   `382181_79.jpeg`, patient `018_S_5240`. All three GFNet fits predict NC
-   for this AD slice, and all pass their frozen rejection thresholds;
-   GFNet-3710 remains above 0.90 even after calibration. CNN-3710 is correct
-   but uncertain enough to be rejected. CNN-3711/3712 instead also miss it.
-   This illustrates both persistent GFNet overconfidence and CNN seed instability,
-   rather than an error that one temperature parameter repairs.
-2. **Agreement can be confidently wrong.** For case 2, `1240482_109.jpeg`,
-   patient `168_S_6828`, every one of the six fits predicts NC and every
-   fixed policy retains the prediction. CNN-3710's calibrated confidence is
-   still 98.55%. Repeating a recipe across seeds therefore does not ensure
-   that a shared error becomes uncertain; agreement is not an external diagnosis.
-3. **Architecture disagreement persists across seeds.** Case 3,
-   `1253141_101.jpeg`, patient `031_S_4021`, is NC. All CNN fits classify
-   it correctly, while all GFNet fits predict AD; every policy retains it.
-   GFNet-3710 remains 91.02% confident after calibration. This is evidence
-   of different learned decisions, but without feature attribution or a
-   controlled intervention it does not identify which image feature caused them.
-4. **A correct alternative may be rejected while an error is retained.**
-   Case 4, `1413656_89.jpeg`, patient `057_S_6869`, is AD. All three CNNs
-   miss it and retain the miss. GFNet-3710/3711 predict AD correctly with
-   calibrated confidence near 54%, so their fixed policies reject it.
-   GFNet-3712 instead predicts NC at 74.75% calibrated confidence and retains
-   that wrong prediction. The label "CNN-only error" describes the reference
-   seed, not every fitted seed.
-5. **A model boundary is not a clinical ambiguity label.** Case 5,
-   `958499_102.jpeg`, patient `019_S_6186`, is NC. GFNet-3710's positive
-   raw margin is only 0.0002827: the 50.00% calibrated display is rounded,
-   not an exact class tie. Its policy rejects this false positive. Both other
-   GFNet seeds and all CNNs classify it correctly. This is uncertainty in one
-   fitted model's decision; the records do not establish medical ambiguity.
+#### Preparation Windows Also Differed in Diagnosis Mix
 
-The visible tissue extent and prepared black backgrounds differ between panels.
-These observations motivate checking preparation and slice position, but do
-not establish an anatomical cause of an error. A single prepared 2D slice,
-without clinical review or feature attribution, cannot justify claims that a
-specific visible structure caused the network's prediction. Also, paths with
-`AD_NC/train/` identify the supplied source folder: cases 1 and 5 belong to
-the frozen TEST manifest, and none of the five patients belongs to TRAIN.
-This membership check does not undo the previously disclosed cohort exposure.
+The source-window start is the first slice index in each prepared acquisition,
+as in the initial data investigation. Five windows account for about **99%
+of TEST**:
 
-#### Examine slice position using the unchanged population and policies
+| Window start | Share of TEST | AD share within group | CNN accuracy | GFNet accuracy |
+| --- | ---: | ---: | ---: | ---: |
+| 75 | 8.45% | 100.00% | 90.00% | 68.87% |
+| 78 | 39.19% | 54.31% | 82.63% | 68.48% |
+| 88 | 26.01% | 46.75% | 78.61% | 74.39% |
+| 94 | 19.59% | 17.24% | 82.30% | 76.44% |
+| 95 | 5.74% | 5.88% | 78.43% | 68.14% |
 
-The saved sensitivity report groups each acquisition's twenty prepared slices
-by zero-based rank: 0--4, 5--9, 10--14 and 15--19. Every group contains
-1,480 slices from all 136 TEST patients, with 805 NC and 675 AD slices.
-The table gives arithmetic means over the three seeds. Retained risk applies
-each fit's original CALIBRATION threshold; no subgroup temperature or cutoff
-is fitted. Accuracy still counts every slice in the subgroup.
+*Accuracy is averaged across seeds. TEST shares describe group size; AD
+shares describe the diagnosis composition within each group.*
 
-| Slice ranks | Slices / patients | CNN accuracy | GFNet accuracy | CNN retained risk | GFNet retained risk |
-| --- | --- | --- | --- | --- | --- |
-| 0--4 | 1,480 / 136 | 83.20% | 72.59% | 11.91% | 22.94% |
-| 5--9 | 1,480 / 136 | 82.43% | 72.50% | 12.17% | 22.82% |
-| 10--14 | 1,480 / 136 | 79.91% | 69.95% | 14.23% | 26.14% |
-| 15--19 | 1,480 / 136 | 81.67% | 71.58% | 13.24% | 24.94% |
+GFNet's higher accuracy in window 94 may partly reflect its mostly NC
+composition, given the model's stronger NC recall. Windows 78 and 88 show
+opposite preferences: CNN performs better in 78, while GFNet performs better
+in 88. Window groups mix preparation differences with changes in patients
+and diagnosis proportions. The tiny window-89 group illustrates the problem:
+GFNet reaches 100%, but the group contains just one NC patient.
 
-Both recipes perform worst at ranks 10--14, despite identical class counts
-and patient membership across rank groups. This supports position-associated
-performance variation within the supplied preparation. Rank is not a registered
-anatomical coordinate across subjects, and no subgroup intervals were computed,
-so it does not establish a particular anatomical explanation or a stable
-population effect. No rank group is removed to improve the main accuracy.
+The within-acquisition position comparison holds patients and diagnosis mix
+fixed, making its shared performance dip more directly suggestive of
+sensitivity to slice content. Window-associated framing and background may
+also provide accidental class cues, especially when preparation and diagnosis
+are strongly associated in TRAIN.
 
-#### Keep source-window and diagnosis confounding visible
+**Agreement and high confidence both accompanied wrong slice classifications.**
+Some failures changed with the training seed; others persisted across all
+fits. The position and window results suggest that available image content
+and preparation cues may contribute to the errors.
 
-Define a source-window start as `slice_index - slice_rank`, using the supplied
-filename index and within-acquisition rank. This is a preparation descriptor,
-not an input to the network or a clinical variable. Its TEST strata have very
-different class proportions and patient counts:
+### Computational Cost
 
-| Source-window start | Slices | Patients | AD slice share | CNN mean accuracy | GFNet mean accuracy |
-| --- | --- | --- | --- | --- | --- |
-| 67 | 20 | 1 | 0.00% | 85.00% | 40.00% |
-| 70 | 20 | 1 | 0.00% | 48.33% | 85.00% |
-| 75 | 500 | 8 | 100.00% | 90.00% | 68.87% |
-| 78 | 2,320 | 48 | 54.31% | 82.63% | 68.48% |
-| 88 | 1,540 | 33 | 46.75% | 78.61% | 74.39% |
-| 89 | 20 | 1 | 0.00% | 85.00% | 100.00% |
-| 94 | 1,160 | 43 | 17.24% | 82.30% | 76.44% |
-| 95 | 340 | 13 | 5.88% | 78.43% | 68.14% |
+#### More Parameters, Lower Memory Use
 
-The start-75 group contains only AD slices, while several groups contain only
-NC. An apparent model advantage in one group can therefore reflect diagnosis
-mix, different patients or acquisition preparation together. The start-89
-GFNet result of 100% covers just twenty slices from one NC patient; it is
-not evidence of perfect generalization. Patients can appear in multiple
-source-window groups through different acquisitions, so these patient counts
-must not be summed as independent cohorts.
+GFNet has about **3.4 times as many parameters as CNN**, yet its recorded
+training memory is about **76% lower** and its batch forward time about
+**36% shorter**. Parameter count alone gives a poor prediction of the GPU
+resources these two implementations need.
 
-The network receives pixels, not source-window indices or diagnosis directories.
-Potential shortcut information would come from image characteristics associated
-with preparation. These descriptive associations neither prove that the network
-uses such a shortcut nor establish disease-specific features independent of it.
-Preparation-matched and external-data validation would be needed to distinguish
-these explanations. Neither the cohort, selected models nor the frozen policies
-are changed by this inspection.
+| Measurement | CNN | GFNet |
+| --- | ---: | ---: |
+| Parameters, millions | 1.17 | 4.03 |
+| Complete TRAIN + TUNE loops, mean minutes per selected fit | 22.46 | 18.67 |
+| Mean peak allocated training memory, GiB | 8.70 | 2.05 |
+| Mean peak allocated TEST memory, GiB | 2.78 | 0.44 |
+| Batch-64 model forward, mean ms/slice | 0.539 | 0.343 |
+| Complete TEST prediction loop, mean seconds | 7.78 | 5.75 |
 
-All five cases, their thirty saved predictions and the 72 model/subgroup count
-reports agree with the manifest and saved predictions. The original case panel
-is reused without opening source medical images or running another model,
-calibration fit, bootstrap or case-selection pass.
+*Costs come from the three selected fits per model. Inference uses the same
+A100-PCIE-40GB with batch 64 and FP32/complex64. Forward time measures the
+synchronized model call; the TEST prediction loop also includes image loading,
+transfers and prediction-record construction. Training times sum the recorded
+TRAIN and TUNE loops, excluding checkpoint writing.*
 
-### Weigh computational cost against reliability and accuracy
+![Selected-model parameter counts, training memory and batch forward cost](figures/final_cost_comparison.png)
 
-Efficiency is a measured trade-off, not a consequence of counting parameters
-alone. The selected CNN has **1,173,154 parameters**, while the selected
-six-block convolutional GFNet has **4,025,058**, about **3.43 times as many**.
-Nevertheless GFNet uses substantially less recorded GPU memory and has faster
-batch forwards in these implementations. Its compact token representation
-and the CNN's spatial feature maps differ; this comparison does not isolate
-the cost of a Fourier filter from the rest of either architecture.
+*Bars show seed means and dots show the individual fits.*
 
-The following table reuses saved histories and the final TEST profiles.
-"Terminal / selected epoch" separates the full training effort from the
-earlier weights chosen by TUNE. Training time sums every recorded TRAIN
-and TUNE loop through termination, rather than stopping the sum at the best
-epoch. All memory columns are **allocated / reserved GiB**, using 2^30 bytes
-per GiB. Reserved memory is the PyTorch allocator pool, not an additional
-amount to add to allocated memory or a measurement of whole-card use.
+The memory difference may largely come from intermediate feature maps.
+CNN performs two convolutions at each resolution before pooling and retains
+large early feature maps for backpropagation. GFNet's stem downsamples at
+every convolution; the Fourier/MLP stack then operates on the compact
+15 × 16 grid. Much of GFNet's parameter count lies in its channel MLPs,
+which can add weights without maintaining equally large spatial activations.
 
-| Model | Seed | Terminal / selected epoch | TRAIN + TUNE loops (min) | Training peak (GiB) | TEST loop wall (s) | Forward (ms/slice) | TEST peak (GiB) |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| CNN | 3710 | 22 / 14 | 20.49 | 8.697 / 13.762 | 9.854 | 0.624 | 2.777 / 4.832 |
-| CNN | 3711 | 26 / 18 | 24.19 | 8.697 / 13.762 | 6.693 | 0.496 | 2.777 / 4.832 |
-| CNN | 3712 | 24 / 16 | 22.69 | 8.697 / 13.762 | 6.793 | 0.496 | 2.777 / 4.832 |
-| GFNet | 3710 | 20 / 7 | 16.03 | 2.048 / 2.576 | 5.688 | 0.342 | 0.437 / 0.734 |
-| GFNet | 3711 | 21 / 13 | 18.05 | 2.048 / 2.576 | 5.791 | 0.344 | 0.437 / 0.734 |
-| GFNet | 3712 | 27 / 19 | 21.92 | 2.048 / 2.576 | 5.756 | 0.342 | 0.437 / 0.734 |
+#### Faster Forwards and Complete Training Cost
 
-![Parameter count, recorded training allocation and batch forward cost](figures/final_cost.png)
+GFNet's complete TEST prediction loop is about **26% shorter**, a smaller
+saving than its model-only forward time. Loading, transfers and record
+construction contribute to the loop alongside model computation.
 
-Bars show seed means and black dots show the individual observations;
-identical parameter and training-memory values overlap. Mean recorded
-TRAIN-plus-TUNE time is **22.46 minutes for CNN and 18.67 for GFNet**.
-These are complete histories for the six selected fits, not the total cost
-of the development search. Training-loop timers include data handling and
-training/evaluation work but exclude checkpoint persistence, job setup and
-queue waiting. Different terminal epochs and historical allocations also
-affect their totals, so this is not a matched fixed-epoch training benchmark.
+The training totals combine per-epoch computation with early stopping:
+CNN completes **24 epochs on average**, against about **22.7 for GFNet**.
+They include epochs after the selected checkpoint, since this training was
+part of finding it. The earlier architecture and recipe comparisons added
+development cost beyond these six selected fits.
 
-All final inference profiles come from the same A100-PCIE-40GB on a100-1,
-with FP32/complex64, batch size 64 and two intra-op/two inter-op threads.
-Each TEST loop covers 5,920 slices in 93 batches, retaining the final 32.
-The mean synchronized forward-call cost is **0.539 ms/slice for CNN versus
-0.343 for GFNet**, a **36.37% reduction** in this pass. The timer surrounds
-the model call and its completion synchronization, excluding host-to-device
-transfer and image loading. It is batch-amortized forward time, not the
-latency of an isolated clinical request.
+**Computational efficiency was GFNet's clearest advantage.** It used less
+GPU memory and faster forwards, while CNN delivered stronger classification
+and error recognition.
 
-TEST-loop wall time includes image loading, transfers and prediction-record
-construction; its means are 7.780 and 5.745 seconds respectively. It excludes
-checkpoint loading, model construction, the preceding CALIBRATION pass and
-temperature fitting, later metric calculation, output persistence and figures.
-The first TEST batch is included, but TEST follows CALIBRATION in the same
-process. There is no separate repeated latency benchmark or uncertainty
-interval for timing; order, caching and runtime variation can affect it.
+## Conclusions and Engineering Recommendation
 
-Recorded peak allocated training memory is **8.697 GiB for CNN versus
-2.048 GiB for GFNet**, a **76.45% reduction**. Final TEST allocated peaks
-are 2.777 versus 0.437 GiB. GFNet therefore has real measured memory and
-throughput benefits here, despite its larger parameter count. These benefits
-must remain visible even when the scientific recommendation favors CNN.
+**CNN provided the more useful confidence estimates.** It ranked errors better,
+had lower calibrated NLL and Brier, and retained fewer mistakes at matched
+coverage. GFNet used less memory and had faster forwards, but fell behind
+in both classification and error recognition.
 
-#### Engineering recommendation from the complete evidence
+### Why GFNet Fell Behind on These Slices
 
-For this **confidence-aware slice-classification prototype**, prefer the
-**CNN with its frozen CALIBRATION-only temperature scaling** over the
-selected GFNet recipe. This recommendation prioritizes probability reliability
-and the usefulness of error rejection, then classification and cost:
+Distributed AD-related changes motivated testing GFNet's ability to combine
+separated image regions. Here, **"global" covers one prepared 2D slice**.
+Complementary anatomical cues may lie in other slices, while framing and
+background remain visible within this one. Its Fourier filters also apply
+the same learned frequency responses to every image, rather than selecting
+regions according to each input. Broad spatial mixing may amplify
+preparation-related cues when those cues correlate with diagnosis.
 
-| Decision evidence | Observation | Consequence |
-| --- | --- | --- |
-| Probability reliability | Calibrated mean NLL 0.4222 vs 0.5489 and Brier 0.1319 vs 0.1857, CNN vs GFNet; paired differences favor CNN | CNN gives better probability scores on this cohort. |
-| Calibration gap | Mean calibrated ECE 0.0212 vs 0.0301; the paired difference interval includes zero | Do not claim a clear calibrated-ECE advantage from the point estimates alone. |
-| Useful rejection | At common 80% coverage, mean risk is 12.54% vs 23.95%; the frozen-policy risk difference also favors CNN | CNN leaves a smaller error burden at the examined operating range. |
-| Classification | All CNN seeds exceed 80%; GFNet seeds remain 71.20--72.11% | GFNet's assessment accuracy goal remains unmet. CNN's result does not substitute for it. |
-| Consequential failures | Both retain confident AD misses, including one case missed by all six fits | Neither is established as a safe automatic diagnostic system. |
-| Resource trade-off | GFNet has lower measured GPU memory and forward time, but 3.43 times the parameters | Its efficiency advantage is real, but does not establish comparable reliability or accuracy. |
+The strongest architectural gain came from the convolutional stem, which
+learns overlapping local features before Fourier mixing. CNN goes further:
+two local convolutions precede each pooling step, while the GFNet stem
+downsamples at every layer. With 408 TRAIN patients, this local hierarchy
+may make subtle within-slice cues easier to learn. CNN's success on many
+GFNet-boundary images supports that explanation: the image often contains
+class information that GFNet has not separated well.
 
-The mean slice-accuracy difference is **GFNet minus CNN = -10.15 percentage
-points**, with the existing paired 95% interval **[-14.41, -5.69]**. Together
-with the probability-score and selective-risk evidence, this supports the
-baseline preference for these frozen recipes. It does not imply every CNN
-is better than every GFNet, or that global filtering itself causes the gap:
-the models differ in architecture and training recipe, including augmentation,
-and this is not an otherwise identical operator ablation.
+The trajectories also point to overfitting: continued TRAIN improvement came
+with worse TUNE accuracy and more confident errors. Reducing twelve blocks
+to six helped, but narrowing the embedding or MLP did not. The effective
+reduction removed repeated blocks while preserving feature width;
+shrinking the representations themselves was less successful.
 
-The experiments also explain why a single appealing metric is insufficient.
-Temperature scaling makes confidence numerically more realistic but leaves
-classifications and error ranking unchanged. Fewer high-confidence errors can
-come with far fewer high-confidence predictions. A faster, smaller-memory fit
-can still miss more AD slices. The engineering choice must consider these
-effects together rather than use calibration or resource savings to excuse
-the unmet classification target.
+These classification failures also explain the confidence result. Large NC
+margins on AD slices made many errors look reliable. Temperature scaling
+softened their probabilities but left the wrong decisions and score ordering
+intact. Improving confidence now calls for better separation of the classes,
+alongside calibration of the resulting scores.
 
-This recommendation is bounded by prior cohort exposure, repeated TUNE
-development, correlated slices, preparation/diagnosis associations and the
-absence of external-site or clinical-ambiguity validation. The bootstrap
-conditions on the selected fits and fixed calibration, not the whole model
-development process. Before any diagnostic use, evidence addressing those
-limits and the retained false negatives would be required. The present result
-is a coursework prototype comparison, not a clinical deployment claim.
+### Recommended Model
 
-The cost figure and measurements were reused from saved outputs. Time sums,
-unit conversions, per-slice forward arithmetic and the six profile/history
-bindings agree; no new training, inference, benchmarking or bootstrap run
-was needed to make this recommendation.
+**For the current prototype, I would choose the temperature-calibrated CNN.**
+It exceeded 80% slice accuracy in all three seeds and retained fewer errors
+at matched coverage. GFNet's lower memory use and faster forwards were its
+clearest advantages, but its classification and AD-error burden weigh more
+heavily in this task. The next experiment would add limited global processing
+to CNN's stronger local features.
+
+## Further Development
+
+### Add a Small Global Branch to the CNN
+
+The stem and depth experiments suggest combining strong local feature
+extraction with a limited amount of global processing. My first hybrid
+experiment would keep the CNN backbone and add **one learned Fourier filter
+after its final convolutional stage, before global average pooling**. At
+that point the feature map is already **15 × 16 × 256**, matching the grid
+used by the final GFNet.
+
+The added branch would normalize the features, apply FFT, learned complex
+frequency weights and inverse FFT, then use GELU before adding its output
+back through a small learnable residual scale. GELU matters here: spatial
+averaging of a purely linear Fourier-filtered branch would retain only its
+zero-frequency component. The nonlinearity lets other frequency responses
+influence the pooled features, without adding the full six-block MLP stack.
+The residual path would preserve the local representation while the small
+initial scale lets the global branch enter gradually.
+Comparing the unchanged CNN with this one-branch
+variant under the same training recipe would show whether the global context
+helps AD recall, confident errors and risk at matched coverage, alongside
+accuracy and resource cost.
+
+### Use the Models Where Their Predictions Complement Each Other
+
+The cases include images recognized by one architecture and missed by the
+other. One combination to test would average their **AD probabilities for
+the same slice**, using a CNN-dominant weight selected on TUNE, then calibrate
+the combined predictor on CALIBRATION. The weighting would be shared across
+seeds. The combination would need to correct enough CNN mistakes to offset
+the errors introduced by GFNet, especially AD misses.
+
+A resource-conscious alternative would run GFNet first and send its uncertain
+images to CNN. The boundary comparison supports this direction: CNN performs
+well on many GFNet-boundary images, whereas GFNet provides little gain on
+CNN-boundary images. The combined system would be compared with CNN alone
+on retained risk and total processing time. Shared confident NC mistakes,
+such as case 2, could bypass the second model and limit the benefit of
+this cascade.
+
+### Improve Confidence Learning and Input Consistency
+
+CNN MixUp is another concrete candidate. It lowered mean TUNE NLL by about
+**41%**, at a cost of about **0.25 percentage points in mean accuracy**.
+A further development round could compare slice accuracy, AD recall and
+probability quality jointly when selecting a recipe. The class-specific
+rejection results also make retained AD errors a useful selection diagnostic.
+
+For a further comparison, I would use a new patient cohort with preparation-
+matched AD and NC groups. V1 TEST results had already been examined before
+the V2 redesign, and TUNE was reused throughout development. Independent
+patients would provide a cleaner assessment of the revised choices.
+
+## Files and Reproduction
+
+| File | Role |
+| --- | --- |
+| [dataset.py](dataset.py) | Read the patient-split CSV, load native grayscale slices and apply TRAIN augmentation. |
+| [modules.py](modules.py) | Define the CNN, rectangular global filter, flat GFNet and Pyramid candidate. |
+| [train.py](train.py) | Train on TRAIN, select on TUNE, and save weights and learning histories. |
+| [predict.py](predict.py) | Load selected weights, fit calibration, evaluate slices and analyze saved predictions. |
+| [README.md](README.md) | Explain the design decisions, experiments and findings. |
+| [figures/](figures/) | Store the illustrations used in this report. |
+
+### Environment and Input Data
+
+The recorded environment used **Python 3.11.15, PyTorch 2.13.0+cu130,
+NumPy 2.4.6, Pillow 12.3.0 and Matplotlib 3.9.4**. Training and evaluation
+used one A100-PCIE-40GB with FP32 features, complex64 FFTs and 2/2 Torch
+threads. The training and prediction entry points initialize these settings
+inside an allocated A100 job; saved-record analysis runs on CPU.
+
+Run the commands from this project directory. Keep data, weights and generated
+results outside it, and replace the example paths below:
+
+```bash
+DATA_ROOT=/home/groups/comp3710/ADNI
+MANIFEST=/path/to/split_manifest.csv
+RUNS=/path/to/training-runs
+RESULTS=/path/to/evaluation-results
+```
+
+The CSV supplies the fixed patient assignment described in the data section.
+Required columns are `relative_image_path`, `subject_id`, `label` and
+`partition`, with NC=0, AD=1 and partitions `train`, `tune`, `calibration`,
+`test`. Paths are relative to `DATA_ROOT`, for example beneath `AD_NC/`.
+The additional `slice_index` and `slice_rank` columns support the preparation
+analysis. Prediction uses the same CSV as its training run.
+
+### Train the Selected Recipes
+
+These commands train one common recipe per architecture at all three seeds.
+GFNet's stem, depth and augmentation are explicit because its defaults describe
+the earlier patch-based model.
+
+```bash
+for SEED in 3710 3711 3712; do
+  python train.py --model cnn --lr 3e-4 --seed "$SEED" \
+    --manifest "$MANIFEST" --data-root "$DATA_ROOT" \
+    --output "$RUNS/cnn-$SEED"
+
+  python train.py --model gfnet --lr 3e-4 --seed "$SEED" \
+    --gfnet-embedding conv --gfnet-depth 6 --gfnet-mlp-ratio 4 --augment \
+    --manifest "$MANIFEST" --data-root "$DATA_ROOT" \
+    --output "$RUNS/gfnet-$SEED"
+done
+```
+
+Each run writes `best.pt` for prediction, `latest.pt` for continuation,
+`history.json` for learning curves and `result.json` for its selected epoch
+and stopping result. To continue a paused fit, repeat its command with
+`--resume`; `--epochs N` limits that invocation to N additional epochs.
+
+### Calibrate and Evaluate
+
+After recipe selection, `evaluate` fits each model's temperature and rejection
+threshold on CALIBRATION, then evaluates all TEST slices. Use a fresh output
+directory for each model and seed.
+
+```bash
+for MODEL in cnn gfnet; do
+  for SEED in 3710 3711 3712; do
+    python predict.py evaluate --checkpoint "$RUNS/$MODEL-$SEED/best.pt" \
+      --manifest "$MANIFEST" --data-root "$DATA_ROOT" --seed "$SEED" \
+      --output "$RESULTS/$MODEL-$SEED"
+  done
+done
+```
+
+Each directory contains `calibration.json` and `test.json`, including
+per-slice predictions, raw/calibrated metrics, the fixed policy and timing.
+
+### Analyze Saved Predictions
+
+The analysis combines the six saved TEST outputs to calculate paired patient
+intervals, compare preparation groups and produce the core evaluation plots.
+Supplying `DATA_ROOT` also renders the five selected failure-case images.
+
+```bash
+python predict.py analyze \
+  --inputs "$RESULTS/cnn-3710/test.json" "$RESULTS/cnn-3711/test.json" \
+           "$RESULTS/cnn-3712/test.json" "$RESULTS/gfnet-3710/test.json" \
+           "$RESULTS/gfnet-3711/test.json" "$RESULTS/gfnet-3712/test.json" \
+  --manifest "$MANIFEST" --data-root "$DATA_ROOT" \
+  --output "$RESULTS/analysis"
+```
+
+Outputs include `analysis.json`, `FINDINGS.md`, and the reliability,
+risk-coverage, confusion, cost and failure-case figures. This step reuses
+the predictions rather than running the models again.
+
+## Feasibility Review
+
+**Practical check-off: completed.**
+
+### A. User Need, Scope & Acceptance Criteria
+
+This prototype helps imaging researchers compare GFNet and a simple CNN for
+Alzheimer's disease (AD) versus cognitively normal (NC) classification of
+individual MRI slices. Its primary question is whether confidence identifies
+unreliable predictions near the decision boundary, including high-confidence
+mistakes. Accuracy and computational cost support the engineering
+recommendation; clinical deployment is outside scope.
+
+Five acceptance criteria: (1) maintain zero patient overlap across data
+partitions; (2) achieve at least 80% full-coverage TEST slice accuracy for
+GFNet, aiming for both models above 80% at each of three seeds; (3) compare
+raw/calibrated confidence using NLL, Brier score, ECE and high-confidence
+false negatives; (4) quantify selective error at matched coverage and explain
+3-5 real failure cases; (5) operate on one A100 within 80% of initially free
+VRAM, recording runtime and supporting checkpoint resume. These are targets,
+not achieved results.
+
+### B. Model Choice & Course Concepts
+
+The course-listed Hard-difficulty GFNet follows Rao et al., *Global Filter
+Networks for Image Classification* (2021). Grayscale tensors retain native
+shape 1 x 240 x 256. Patches of 16 x 16 form a 15 x 16 grid; a starting
+design uses width 256 and twelve blocks. Learned complex filters mix spatial
+features through 2D FFT and inverse FFT, with explicit rectangular
+reconstruction. These are learned image features, not scanner k-space.
+
+A four-stage CNN (32/64/128/256 channels) provides the baseline. Both start
+from random weights and use the same partitions, preprocessing and slice
+cross-entropy. Unequal capacities mean this compares complete models, not
+Fourier filtering in isolation.
+
+### C. Data Feasibility & Slice-Based Protocol
+
+Metadata identify 680 patients, 1,526 scans and 30,520 JPEG slices. The
+supplied folders share 216 patients, so the design uses patient-disjoint
+TRAIN/TUNE/CALIBRATION/TEST partitions of 408/68/68/136 patients, containing
+18,560/2,860/3,180/5,920 slices. Patient identity controls separation only;
+predictions and classification metrics remain slice-level.
+
+Each epoch shuffles every TRAIN slice once with equal loss weight: 290
+updates at batch 64. Checkpoint and learning-rate selection prioritize
+full-coverage TUNE slice accuracy, then lower slice NLL for an exact tie,
+then the earlier epoch. Stopping follows accuracy improvement after a
+minimum training period. Temperature and rejection thresholds are fitted
+only on CALIBRATION; TEST uses fixed choices. Assessment accuracy is correct
+slices divided by all TEST slices, without voting or probability aggregation.
+Also report per-class precision/recall, macro-F1 and AUROC.
+
+### D. Risks, Compute Budget & Next Experiment
+
+The next step is a small TRAIN-only learning/resume check and a bounded A100
+pilot measuring memory and epoch time. The initial search compares learning
+rates 1e-4 and 3e-4 for each model at seed 3710; selected settings receive
+seeds 3711 and 3712. This is at most eight fits, initially capped at 30 epochs
+each (69,600 updates total). Warmup, cosine decay and accuracy-based patience
+will be assessed on TUNE; further compute requires an explicit development
+decision.
+
+If memory is excessive, reduce microbatch size with gradient accumulation
+to retain effective batch 64. If learning or generalization fails, inspect
+labels, gradients, class recall and TRAIN/TUNE curves before changing one
+factor. Correlated slices, preparation-related shortcuts and model capacity
+remain limitations. Confidence is not medical certainty. Report every seed,
+reliability and risk-coverage curves, representative errors and measured
+costs; do not substitute selective accuracy or an above-80% mean for
+full-coverage per-seed results.
 
 ## Artificial Intelligence Usage Disclosure
 
-OpenAI Codex assisted with implementation, code organization, interpretation
-of saved experiment records and documentation. Model choices and results remain
-the author's responsibility. Saved measurements are identified by their run or
-job; writing or simplifying code does not reproduce those experiments.
+OpenAI Codex assisted with implementing and refactoring the data pipeline,
+model components, training and evaluation code. It also helped interpret saved
+experiment records, produce figures and edit this report.
+
+The author is responsible for the submitted code, experimental choices and
+reported results.
 
 ## References
 
