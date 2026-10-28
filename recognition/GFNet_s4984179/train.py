@@ -125,6 +125,7 @@ def a100_runtime(seed):
 
 def build_model(name, gfnet_embedding="patch", gfnet_depth=12, pyramid_depths=(2, 2, 2),
                 gfnet_mlp_ratio=4):
+    """Return a fresh CNN, GFNet or pyramid model with the requested structure."""
     return {"cnn": BaselineCNN,
             "gfnet": lambda: GFNet(embedding=gfnet_embedding, depth=gfnet_depth,
                                    mlp_ratio=gfnet_mlp_ratio),
@@ -330,6 +331,7 @@ def save_checkpoint(path, value):
 
 
 def capture_rng(device):
+    """Return Python, NumPy, CPU Torch and active-device CUDA RNG states."""
     numpy = np.random.get_state()
     return {
         "torch": torch.get_rng_state(), "python": random.getstate(),
@@ -339,6 +341,7 @@ def capture_rng(device):
 
 
 def restore_rng(state, device):
+    """Restore capture_rng's saved states before continuing training on device."""
     torch.set_rng_state(state["torch"])
     random.setstate(state["python"])
     numpy = state["numpy"]

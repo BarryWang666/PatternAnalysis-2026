@@ -725,6 +725,29 @@ GFNet with ratio 4 and mild geometry. Final evaluation asked whether GFNet's
 global features offered a confidence or efficiency advantage despite its
 lower TUNE accuracy.
 
+### Learning Curves of the Selected Recipes
+
+![TRAIN loss, TUNE NLL and slice accuracy for the six final V2 models](figures/final_training_curves.png)
+
+*Colours identify seeds 3710–3712; circles mark the accuracy-first selected
+checkpoints. Dashed accuracy lines show TRAIN and solid lines show TUNE.
+All six fits stopped by patience after 20–27 epochs.*
+
+CNN's selected epochs were **14, 18 and 16**. Continued training brought
+TRAIN accuracy to 100%, while TUNE accuracy stayed near 81–84% and NLL rose
+at every seed. The extra training made the model more certain without
+improving its classification of new patients. This helps explain why the
+accuracy-selected CNN still needed confidence calibration.
+
+GFNet's selected epochs were **7, 13 and 19**. By the final epoch, TRAIN
+accuracy reached 99.45–99.90%, but TUNE accuracy had fallen **2.13–5.17
+percentage points** from the selected checkpoints, with rising NLL at all
+three seeds. GFNet could fit the training slices; longer training widened
+the generalization gap. Its global filters and MLPs may have learned
+patient-specific appearance more readily than transferable disease features.
+This is consistent with the earlier gains from a convolutional stem and
+reduced depth, which added local structure and limited capacity.
+
 ## Evaluating Confidence and Selective Prediction
 
 ### Calibrate the Probability Scale
@@ -1499,6 +1522,34 @@ and stopping result. `learning_curves.png` plots the TRAIN objective, TUNE NLL
 and slice accuracy after each training invocation. To continue a paused fit,
 repeat its command with `--resume`; `--epochs N` limits that invocation to
 N additional epochs.
+
+### Inspect Slice Predictions
+
+`predict` writes a class, AD probability and raw confidence for each image in
+the requested TUNE or CALIBRATION partition:
+
+```bash
+python predict.py predict --checkpoint "$RUNS/cnn-3710/best.pt" \
+  --manifest "$MANIFEST" --data-root "$DATA_ROOT" --partition calibration \
+  --seed 3710 --output "$RESULTS/cnn-3710-calibration-predictions.json"
+```
+
+One record from the saved CNN-3710 CALIBRATION predictions is shown below
+(probabilities rounded to six decimals). Labels and predictions use **NC=0,
+AD=1**; this AD slice was correctly classified with 99.07% raw confidence.
+
+```json
+{
+  "path": "AD_NC/test/AD/1039632_100.jpeg",
+  "label": 1,
+  "prediction": 1,
+  "probability_ad": 0.990674,
+  "confidence": 0.990674
+}
+```
+
+The output JSON also contains the model identity and partition metrics; the
+terminal prints the metric summary.
 
 ### Calibrate and Evaluate
 
