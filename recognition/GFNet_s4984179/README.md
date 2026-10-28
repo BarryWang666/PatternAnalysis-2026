@@ -740,10 +740,10 @@ slices**. Separate patients keep this probability adjustment apart from
 TUNE's model-selection role.
 
 For the logit difference $m=z_{\mathrm{AD}}-z_{\mathrm{NC}}$,
-calibrated predicted-class confidence is
+the calibrated confidence $c$ of the predicted class is
 
 $$
-\operatorname{confidence}=\sigma\!\left(\frac{|m|}{T}\right),\qquad T>0.
+c = \frac{1}{1 + e^{-|m|/T}}, \quad T > 0.
 $$
 
 A temperature above one softens confidence; one below one sharpens it. The
