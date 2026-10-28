@@ -137,8 +137,14 @@ def classification_report(records):
     return result
 
 
-def confidence_report(records):
-    """Add raw confidence reliability and error-discrimination diagnostics."""
+def reliability_report(records, n_bins=10):
+    """Report classification, confidence quality and error discrimination.
+
+    Equal-width confidence bins cover [0.5,1], including 1 in the final bin.
+    Empty bin means are None; ECE weights each gap by its slice count.
+    """
+    if n_bins < 1:
+        raise ValueError("Use at least one confidence bin")
     records = list(records)
     result = classification_report(records)
     labels = np.asarray([row["label"] for row in records])
@@ -158,23 +164,6 @@ def confidence_report(records):
         "error_detection_auroc": auroc((~correct).astype(int), -np.abs(margins)),
         "confidence_correctness_correlation": correlation,
     })
-    return result
-
-
-def reliability_report(records, n_bins=10):
-    """Add equal-width bins on [0.5,1] and sample-weighted ECE to raw metrics.
-
-    Input records contain label and margin. Each output bin has count, mean
-    confidence and accuracy; empty means are None, and the final bin includes 1.
-    """
-    if n_bins < 1:
-        raise ValueError("Use at least one confidence bin")
-    records = list(records)
-    result = confidence_report(records)
-    margins = np.asarray([row["margin"] for row in records], dtype=np.float64)
-    labels = np.asarray([row["label"] for row in records])
-    confidence = probabilities(np.abs(margins))
-    correct = (margins >= 0) == labels
     edges = np.linspace(0.5, 1.0, n_bins + 1)
     bins, ece = [], 0.0
     for index, (lower, upper) in enumerate(zip(edges[:-1], edges[1:])):
@@ -412,36 +401,6 @@ def failure_cases(results):
     return selected
 
 
-def plot_reliability(report, output, title="Slice confidence reliability"):
-    """Plot existing bin statistics and slice counts without rerunning inference."""
-    import matplotlib.pyplot as plt
-
-    bins = report["reliability_bins"]
-    populated = [entry for entry in bins if entry["count"]]
-    fig, (ax, counts_ax) = plt.subplots(
-        2, 1, figsize=(6.4, 6.2), sharex=True,
-        gridspec_kw={"height_ratios": [3, 1]}, layout="constrained",
-    )
-    ax.plot([0.5, 1], [0.5, 1], "--", color="0.5", label="Ideal calibration")
-    ax.plot([entry["confidence"] for entry in populated],
-            [entry["accuracy"] for entry in populated],
-            "o-", color="#2563EB", label="Observed accuracy")
-    ax.set(title=f"{title}\nECE = {report['ece']:.3f} | n = {report['n']:,}",
-           ylabel="Fraction correct", ylim=(0, 1.03), xlim=(0.49, 1.01))
-    ax.grid(alpha=0.2)
-    ax.legend(loc="best")
-    counts_ax.bar([(entry["lower"] + entry["upper"]) / 2 for entry in bins],
-                  [entry["count"] for entry in bins],
-                  width=[0.9 * (entry["upper"] - entry["lower"]) for entry in bins],
-                  color="#2563EB")
-    counts_ax.set(xlabel="Predicted confidence", ylabel="Slices")
-    output = Path(output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=180)
-    plt.close(fig)
-    return str(output)
-
-
 def preparation_sensitivity(results, manifest_rows):
     """Describe source slice-start/rank strata without changing the main cohort."""
     lookup = {row["relative_image_path"]: row for row in manifest_rows if row["partition"] == "test"}
@@ -503,7 +462,8 @@ def plot_final_results(results, cases, output, data_root=None):
         matrix = np.asarray(item["raw"]["confusion"])
         ax.imshow(matrix, cmap="Blues", vmin=0, vmax=max(sum(matrix)))
         for i in range(2):
-            for j in range(2):ax.text(j, i, str(matrix[i, j]), ha="center", va="center")
+            for j in range(2):
+                ax.text(j, i, str(matrix[i, j]), ha="center", va="center")
         ax.set(xticks=[0, 1], yticks=[0, 1], xticklabels=["NC", "AD"], yticklabels=["NC", "AD"],
                xlabel="Predicted", ylabel="True", title=f"{item['model'].upper()} {item['seed']}: {item['raw']['accuracy']:.2%}")
     fig.savefig(output / "confusion.png", dpi=180); plt.close(fig)
@@ -526,8 +486,10 @@ def plot_final_results(results, cases, output, data_root=None):
         from PIL import Image
         fig, axes = plt.subplots(len(cases), 2, figsize=(12, 2.7 * len(cases)), squeeze=False, layout="constrained")
         for (image_ax, text_ax), case in zip(axes, cases):
-            with Image.open(Path(data_root) / case["path"]) as image:image_ax.imshow(np.asarray(image), cmap="gray", vmin=0, vmax=255)
-            image_ax.axis("off"); text_ax.axis("off")
+            with Image.open(Path(data_root) / case["path"]) as image:
+                image_ax.imshow(np.asarray(image), cmap="gray", vmin=0, vmax=255)
+            image_ax.axis("off")
+            text_ax.axis("off")
             lines = [case["slot"] + (" (fallback)" if case["used_fallback"] else ""),
                      f"True {'AD' if case['label'] else 'NC'} | {case['subject_id']}", case["path"]]
             for key, value in sorted(case["predictions"].items()):
@@ -558,25 +520,21 @@ def analyze_evaluations(inputs, manifest, output, data_root=None):
               "input_hashes": {str(path): file_digest(path) for path in inputs}}
     write_json(output / "analysis.json", result)
     plot_final_results(results, cases, output, data_root)
-    lines = ["# Final individual-slice evaluation", "", "All seeds share the same TEST patients; these are not independent cohorts.", "",
+    lines = ["# Final individual-slice evaluation", "", "All model/seed outputs cover the same TEST slices.", "",
              "| Model | Seed | Correct / slices | Accuracy | Raw / calibrated NLL | Raw / calibrated ECE | Fixed coverage / risk | HC errors / FNs (raw) |",
              "| --- | --- | --- | --- | --- | --- | --- | --- |"]
     for item in sorted(results, key=lambda r: (r["model"], r["seed"])):
         a, b, s = item["raw"], item["calibrated"], item["selective"]
         risk = f"{s['risk']:.2%}" if s["risk"] is not None else "undefined"
         lines.append(f"| {item['model']} | {item['seed']} | {a['correct']} / {a['n']} | {a['accuracy']:.2%} | {a['nll']:.4f} / {b['nll']:.4f} | {a['ece']:.4f} / {b['ece']:.4f} | {s['coverage']:.2%} / {risk} | {a['high_confidence_errors']} / {a['high_confidence_false_negatives']} |")
-    lines += ["", "analysis.json contains paired conditional intervals, all classification/uncertainty metrics, source-start/rank sensitivity, error cases and cost measurements.",
-              "Thresholds and temperatures were fixed from CALIBRATION; accuracy includes every TEST slice. Compare selective risk alongside achieved coverage.",
-              "Source-start/rank strata are descriptive and cannot establish removal of preparation confounding or causal disease features.",
-              "The study compares selected model/training recipes, not an isolated Fourier-operator ablation. Prior cohort exposure and repeated TUNE development limit generalization claims.",
-              "Clinical diagnostic ambiguity and external-site validity were not established. The engineering recommendation must weigh reliability/errors before accuracy and cost."]
+    lines += ["", "analysis.json contains paired intervals, preparation-group metrics, failure cases and model costs.",
+              "Temperatures and rejection thresholds are fitted on CALIBRATION; accuracy includes every TEST slice."]
     (output / "FINDINGS.md").write_text("\n".join(lines) + "\n")
     return result
 
 
-def infer(checkpoint, manifest, data_root, partition, batch_size=64, *,
-          device="cpu", output=None):
-    """Predict TUNE/CALIBRATION slices; TEST requires its later fixed-policy path."""
+def infer(checkpoint, manifest, data_root, partition, batch_size=64, *, device="cpu"):
+    """Predict TUNE/CALIBRATION slices; evaluate handles the final TEST workflow."""
     if partition not in ("tune", "calibration"):
         raise ValueError("Use tune or calibration; final TEST evaluation is not enabled here")
     rows = read_manifest(manifest)
@@ -595,9 +553,6 @@ def infer(checkpoint, manifest, data_root, partition, batch_size=64, *,
         "records": predict_slices(model, make_loader(data, batch_size, config["seed"]), device),
     }
     result["metrics"] = reliability_report(result["records"])
-    if output is not None:
-        Path(output).parent.mkdir(parents=True, exist_ok=True)
-        write_json(output, result)
     return result
 
 
@@ -687,11 +642,6 @@ def main(argv=None):
     evaluation.add_argument("--output", required=True, help="Fresh directory for calibration.json and test.json")
     evaluation.add_argument("--batch-size", type=int, default=64)
     evaluation.add_argument("--seed", type=int, default=3710)
-    reporting = commands.add_parser("report", help="Analyze saved predictions without rerunning the model")
-    reporting.add_argument("--input", required=True)
-    reporting.add_argument("--output", required=True)
-    reporting.add_argument("--bins", type=int, default=10)
-    reporting.add_argument("--figure", help="Optional reliability diagram PNG/PDF")
     analysis = commands.add_parser("analyze", help="Analyze six saved final evaluations without model execution")
     analysis.add_argument("--inputs", nargs=6, required=True)
     analysis.add_argument("--manifest", required=True)
@@ -703,23 +653,17 @@ def main(argv=None):
         print(json.dumps({"patients": result["bootstrap"]["patients"], "slices": result["bootstrap"]["slices"],
                           "replicates": result["bootstrap"]["replicates"]}, indent=2))
         return 0
-    if args.command in ("predict", "evaluate"):
-        device, runtime = a100_runtime(args.seed)
-        if args.command == "evaluate":
-            result = evaluate_selected(args.checkpoint, args.manifest, args.data_root, args.output,
-                                       args.batch_size, device=device, runtime=runtime)
-            print(json.dumps({"model": result["model"], "seed": result["seed"],
-                              "test_accuracy": result["raw"]["accuracy"],
-                              "temperature": result["policy"]["temperature"]}, indent=2))
-            return 0
-        result = infer(args.checkpoint, args.manifest, args.data_root, args.partition,
-                       args.batch_size, device=device)
-        result["runtime"] = runtime
-    else:
-        result = json.loads(Path(args.input).read_text(encoding="utf-8"))
-        result["metrics"] = reliability_report(result["records"], args.bins)
-        if args.figure:
-            plot_reliability(result["metrics"], args.figure)
+    device, runtime = a100_runtime(args.seed)
+    if args.command == "evaluate":
+        result = evaluate_selected(args.checkpoint, args.manifest, args.data_root, args.output,
+                                   args.batch_size, device=device, runtime=runtime)
+        print(json.dumps({"model": result["model"], "seed": result["seed"],
+                          "test_accuracy": result["raw"]["accuracy"],
+                          "temperature": result["policy"]["temperature"]}, indent=2))
+        return 0
+    result = infer(args.checkpoint, args.manifest, args.data_root, args.partition,
+                   args.batch_size, device=device)
+    result["runtime"] = runtime
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     write_json(args.output, result)
     metrics = result["metrics"]

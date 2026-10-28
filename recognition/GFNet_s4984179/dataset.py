@@ -5,8 +5,11 @@ Output: float32 [1,240,256] images, labels and identifiers.
 The partition column defines roles; supplied folder names are provenance.
 """
 
+import argparse
 import csv
+import json
 from pathlib import Path
+import re
 
 import numpy as np
 from PIL import Image
@@ -15,6 +18,80 @@ from torch.utils.data import DataLoader, Dataset
 
 
 PARTITIONS = ("train", "tune", "calibration", "test")
+
+
+def split_patients(rows, seed=2026):
+    """Stratify patients into TRAIN/TUNE/CALIBRATION/TEST at 60/10/10/20.
+
+    Sort patient IDs, then permute AD followed by NC with one PCG64 stream.
+    Round the first three allocations; TEST receives the remaining patients.
+    Every image inherits its patient's assignment.
+    """
+    rows = list(rows)
+    subjects = {}
+    for row in rows:
+        subject, label = row["subject_id"], int(row["label"])
+        if not subject or label not in (0, 1):
+            raise ValueError("Patient IDs and binary labels are required")
+        if subjects.setdefault(subject, label) != label:
+            raise ValueError("A patient has conflicting diagnosis labels")
+    rng = np.random.Generator(np.random.PCG64(seed))
+    assigned = {}
+    for label in (1, 0):
+        ids = sorted(subject for subject in subjects if subjects[subject] == label)
+        order = rng.permutation(len(ids))
+        counts = [round(len(ids) * fraction) for fraction in (.6, .1, .1)]
+        counts.append(len(ids) - sum(counts))
+        start = 0
+        for partition, count in zip(PARTITIONS, counts):
+            for index in order[start:start + count]:
+                assigned[ids[int(index)]] = partition
+            start += count
+    return [{**row, "partition": assigned[row["subject_id"]]} for row in rows]
+
+
+def build_manifest(data_root, output, seed=2026):
+    """Recover patients from course metadata and write a fresh slice-split CSV.
+
+    Read meta_data_with_label.json and AD_NC/{train,test}/{AD,NC} filenames.
+    Source labels are AD=2/NC=0; classifier labels are AD=1/NC=0.
+    This step reads metadata and filenames, not image pixels.
+    """
+    root = Path(data_root).resolve()
+    metadata = json.loads((root / "meta_data_with_label.json").read_text())
+    scans = {}
+    for supplied in ("train", "test"):
+        for diagnosis, label in (("AD", 1), ("NC", 0)):
+            for path in sorted((root / "AD_NC" / supplied / diagnosis).iterdir()):
+                if path.suffix.lower() not in (".jpg", ".jpeg"):
+                    continue
+                scan_id, index = path.stem.rsplit("_", 1)
+                record = metadata[scan_id]
+                subject = re.search(r"ADNI_(\d+_S_\d+)(?=_|[./]|$)", record["raw"])
+                if subject is None or record["label"] != 2 * label:
+                    raise ValueError(f"Patient or label mismatch for acquisition {scan_id}")
+                scans.setdefault(scan_id, []).append({
+                    "relative_image_path": path.relative_to(root).as_posix(),
+                    "subject_id": subject[1], "label": label,
+                    "scan_id": scan_id, "slice_index": int(index),
+                })
+    rows = []
+    for slices in scans.values():
+        for rank, row in enumerate(sorted(slices, key=lambda row: row["slice_index"])):
+            rows.append({**row, "slice_rank": rank})
+    if not rows:
+        raise ValueError("No prepared ADNI slices were found")
+    rows = sorted(split_patients(rows, seed), key=lambda row: row["relative_image_path"])
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=(
+            "relative_image_path", "subject_id", "label", "partition",
+            "scan_id", "slice_index", "slice_rank",
+        ))
+        writer.writeheader()
+        writer.writerows(rows)
+    return rows
 
 
 def read_manifest(path):
@@ -116,3 +193,14 @@ def make_loader(data, batch_size=64, seed=3710, epoch=0):
         data, batch_size=batch_size, shuffle=data.partition == "train",
         drop_last=False, num_workers=0, generator=generator,
     )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Create the patient-disjoint ADNI slice manifest")
+    parser.add_argument("--data-root", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--seed", type=int, default=2026)
+    args = parser.parse_args()
+    rows = build_manifest(args.data_root, args.output, args.seed)
+    print(json.dumps({role: sum(row["partition"] == role for row in rows)
+                      for role in PARTITIONS}, indent=2))

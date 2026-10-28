@@ -361,6 +361,27 @@ def save_tune_predictions(output, selected):
         })
 
 
+def plot_history(history, output):
+    """Draw saved TRAIN objectives and TUNE metrics without model execution."""
+    from matplotlib.figure import Figure
+
+    figure = Figure(figsize=(9, 3.5), layout="constrained")
+    loss_ax, accuracy_ax = figure.subplots(1, 2)
+    epochs = [item["epoch"] for item in history]
+    loss_ax.plot(epochs, [item["train"]["mean_loss"] for item in history], label="TRAIN objective")
+    loss_ax.plot(epochs, [item["tune"]["nll"] for item in history], label="TUNE NLL")
+    for role in ("train", "tune"):
+        values = [item[role]["accuracy"] for item in history]
+        if any(value is not None for value in values):
+            accuracy_ax.plot(epochs, values, label=role.upper())
+    loss_ax.set(xlabel="Epoch", ylabel="Loss")
+    accuracy_ax.set(xlabel="Epoch", ylabel="Slice accuracy", ylim=(0, 1))
+    for axis in (loss_ax, accuracy_ax):
+        axis.legend()
+        axis.grid(alpha=.2)
+    figure.savefig(output, dpi=180)
+
+
 def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
         runtime, *, resume=False, epochs=None):
     """Fit TRAIN/TUNE datasets and persist complete epoch boundaries.
@@ -394,9 +415,10 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
             raise FileExistsError("Use an empty output directory or --resume")
     model.to(device)
     optimizer = build_optimizer(model, config)
+    sources = source_identity()
     identity = {"config": asdict(config), "manifest_sha256": manifest_sha256,
-                "sources": source_identity()}
-    runtime = {**runtime, "sources": source_identity()}
+                "sources": sources}
+    runtime = {**runtime, "sources": sources}
     history, best, best_checkpoint = [], None, None
     bad_epochs, step, completed = 0, 0, 0
     if saved is not None:
@@ -457,6 +479,7 @@ def fit(model, train_data, tune_data, config, output, manifest_sha256, device,
               f"hc_fn={tune_result['high_confidence_false_negatives']}", flush=True)
         if reason:
             break
+    plot_history(history, output / "learning_curves.png")
     return history
 
 

@@ -2,7 +2,7 @@
 
 **GFNet and CNN for Alzheimer’s MRI Slice Classification**
 
-**Xingyu Wang** · Student ID: s4984179
+**Xingyu Wang** · Student ID: 49841798
 
 COMP3710 · Final Project Report · 2026
 
@@ -25,7 +25,7 @@ classification accuracy and computational cost. Both models are trained
 from scratch on patient-disjoint partitions and evaluated across three
 training seeds. Retaining the most confident 80% of predictions gave a mean
 error rate of **12.54% for CNN, compared with 23.95%
-for GFNet**. It also exceeded 80% TEST slice accuracy in all three seeds,
+for GFNet**. CNN also exceeded 80% TEST slice accuracy in all three seeds,
 averaging **81.80%; GFNet averaged 71.66%**. Temperature scaling improved
 both models' probability quality, although confident AD misses remained.
 GFNet used less GPU memory and had faster forwards.
@@ -1430,7 +1430,7 @@ patients would provide a cleaner assessment of the revised choices.
 
 | File | Role |
 | --- | --- |
-| [dataset.py](dataset.py) | Read the patient-split CSV, load native grayscale slices and apply TRAIN augmentation. |
+| [dataset.py](dataset.py) | Generate the patient-split CSV, load native grayscale slices and apply TRAIN augmentation. |
 | [modules.py](modules.py) | Define the CNN, rectangular global filter, flat GFNet and Pyramid candidate. |
 | [train.py](train.py) | Train on TRAIN, select on TUNE, and save weights and learning histories. |
 | [predict.py](predict.py) | Load selected weights, fit calibration, evaluate slices and analyze saved predictions. |
@@ -1454,6 +1454,18 @@ MANIFEST=/path/to/split_manifest.csv
 RUNS=/path/to/training-runs
 RESULTS=/path/to/evaluation-results
 ```
+
+For a new training run, generate the patient-disjoint manifest from the
+supplied metadata and image filenames:
+
+```bash
+python dataset.py --data-root "$DATA_ROOT" --output "$MANIFEST" --seed 2026
+```
+
+This recovers patient IDs from `meta_data_with_label.json`, converts the source
+labels to NC=0/AD=1, and assigns sorted patients within each diagnosis using
+PCG64(2026). Every slice inherits its patient's role. Existing checkpoints
+use the original manifest saved with their training run.
 
 The CSV supplies the fixed patient assignment described in the data section.
 Required columns are `relative_image_path`, `subject_id`, `label` and
@@ -1483,8 +1495,10 @@ done
 
 Each run writes `best.pt` for prediction, `latest.pt` for continuation,
 `history.json` for learning curves and `result.json` for its selected epoch
-and stopping result. To continue a paused fit, repeat its command with
-`--resume`; `--epochs N` limits that invocation to N additional epochs.
+and stopping result. `learning_curves.png` plots the TRAIN objective, TUNE NLL
+and slice accuracy after each training invocation. To continue a paused fit,
+repeat its command with `--resume`; `--epochs N` limits that invocation to
+N additional epochs.
 
 ### Calibrate and Evaluate
 
@@ -1602,11 +1616,19 @@ OpenAI Codex assisted with implementing and refactoring the data pipeline,
 model components, training and evaluation code. It also helped interpret saved
 experiment records, produce figures and edit this report.
 
+Verification included synthetic checks of data loading and metric calculations,
+inspection of TRAIN/TUNE curves, and A100 checkpoint-continuation checks.
+Reported values and figures were checked against saved predictions and
+experiment records.
+
 The author is responsible for the submitted code, experimental choices and
 reported results.
 
 ## References
 
+- Wightman et al., *PyTorch Image Models (timm)*. The stochastic-depth
+  implementation informed `DropPath` in [modules.py](modules.py).
+  [Code](https://github.com/huggingface/pytorch-image-models).
 - Geifman and El-Yaniv, *Selective Classification for Deep Neural Networks*, 2017.
   [Paper](https://arxiv.org/abs/1705.08500).
 - Xiao et al., *Early Convolutions Help Transformers See Better*, NeurIPS 2021.
