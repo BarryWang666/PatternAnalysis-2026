@@ -223,13 +223,8 @@ height and width, so the tokens return to their rectangular layout. Learned
 responses let different layers and channels emphasize different frequency
 patterns. These filters are learned across training images and shared at
 inference, rather than recomputed for each input as attention weights are.
-The authors' visualization below shows this learned specialization.
-
-![Learned filters from different layers of the authors' GFNet-XS model](figures/gfnet_author_filters.png)
-
-*Learned filters from the authors' GFNet-XS model, arranged by layer.
-Source: [official GFNet repository](https://github.com/raoyongming/GFNet#visualization).
-Copyright © 2021 Yongming Rao; [MIT license](figures/gfnet_intro.LICENSE.txt).*
+The [trained-filter analysis](#inspecting-the-trained-global-filters) below
+visualizes the responses learned in this experiment.
 
 Each flat block retains the paper's single residual branch. Its core forward
 path in [GFNetBlock](modules.py) is:
@@ -747,6 +742,40 @@ the generalization gap. Its global filters and MLPs may have learned
 patient-specific appearance more readily than transferable disease features.
 This is consistent with the earlier gains from a convolutional stem and
 reduced depth, which added local structure and limited capacity.
+
+### Inspecting the Trained Global Filters
+
+I extracted the six learned filters from the selected **GFNet-3710, epoch 7**
+checkpoint to examine how global mixing operated on the MRI features.
+
+![Learned frequency gains and spatial kernels from the selected ADNI GFNet](figures/gfnet_learned_filters.png)
+
+*Top: root-mean-square magnitude across 256 channels on the stored 15 × 9
+frequency grid. Bottom: channel-RMS spatial kernels obtained by inverse FFT,
+centred at zero offset. Each row uses a shared logarithmic colour scale
+across all six blocks.*
+
+The constant component (zero frequency) receives less gain than many higher
+frequencies. The filters therefore reduce spatially uniform features relative
+to varying patterns. Later blocks generally have smaller aggregate gains.
+The spatial kernels extend across the token grid, showing how the filters
+combine separated locations rather than restricting each operation to a
+small neighbourhood.
+
+![A CALIBRATION slice and channel-zero features before and after its first global filter](figures/gfnet_filter_response.png)
+
+*The first saved CALIBRATION slice, with fixed channel 0 in block 1.
+The input is the normalized feature grid entering the filter; the output is
+its response before the following normalization and MLP. Separate colour
+scales show each activation range. These are feature maps, not lesion maps.*
+
+Filtering redistributes this channel's response across the 15 × 16 grid;
+the result no longer follows the brain-shaped pattern in the input feature.
+The MLP processes these mixed features before the branch rejoins the residual
+path. Global reach is present, but the training curves show that it did not
+translate into stronger generalization. The convolutional stem's improvement
+suggests that establishing useful local features mattered more here than
+mixing distant locations alone.
 
 ## Evaluating Confidence and Selective Prediction
 
